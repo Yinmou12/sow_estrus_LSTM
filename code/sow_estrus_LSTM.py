@@ -2,7 +2,7 @@
 # 如果你修改了多个文件，想全部提交，运行：git add .
 # 最后完成本地记录并上传到服务器：
 # git commit -m "这里写你的修改说明，例如：优化了模型参数"
-# git push origin master
+# git push origin main
 
 import sow_estrus_LSTM_Info
 import sow_estrus_LSTM_Function as myFunction
