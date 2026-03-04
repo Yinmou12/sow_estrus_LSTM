@@ -1,2 +1,5 @@
+__pycache__/
+*.pyc
+temp_test_data/
 *.ipynb
 *.zip
