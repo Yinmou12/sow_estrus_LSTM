@@ -4,7 +4,7 @@
 # git commit -m "这里写你的修改说明，例如：优化了模型参数"
 # git push origin main
 
-import sow_estrus_LSTM_Info
+from sow_estrus_LSTM_Info import *
 import sow_estrus_LSTM_Function as myFunction
 
 import joblib
@@ -29,17 +29,3 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-
-source_data_path = sow_estrus_LSTM_Info.source_data_path
-summary_data_path = sow_estrus_LSTM_Info.summary_data_path
-experimentRecord_data_path = sow_estrus_LSTM_Info.experimentRecord_data_path
-test_data_path = sow_estrus_LSTM_Info.test_data_path
-save_modeel_path = sow_estrus_LSTM_Info.save_model_path
-
-time_choice = sow_estrus_LSTM_Info.time_choice
-
-columns_name = sow_estrus_LSTM_Info.columns_name
-columns_temperatures = [f"temperature_{i}" for i in range(1, 49)]
-
-start_time = sow_estrus_LSTM_Info.start_time
-end_time = sow_estrus_LSTM_Info.end_time

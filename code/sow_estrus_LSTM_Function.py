@@ -1,24 +1,11 @@
-import sow_estrus_LSTM_Info
+from sow_estrus_LSTM_Info import *
+import sow_estrus_LSTM_Function as myFunction
 
 import joblib
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import os as os
-
-source_data_path = sow_estrus_LSTM_Info.source_data_path
-summary_data_path = sow_estrus_LSTM_Info.summary_data_path
-experimentRecord_data_path = sow_estrus_LSTM_Info.experimentRecord_data_path
-test_data_path = sow_estrus_LSTM_Info.test_data_path
-save_modeel_path = sow_estrus_LSTM_Info.save_model_path
-
-time_choice = sow_estrus_LSTM_Info.time_choice
-
-columns_name = sow_estrus_LSTM_Info.columns_name
-columns_temperatures = [f"temperature_{i}" for i in range(1, 49)]
-
-start_time = sow_estrus_LSTM_Info.start_time
-end_time = sow_estrus_LSTM_Info.end_time
 
 
 # 数据提取
@@ -109,8 +96,11 @@ def correct_abnormal_temperatures_linear(
     return final_data
 
 
-# 发情母猪的数据选择
-def estrusSows_data_choice(data: pd.DataFrame, time_choice):
+# 数据选择
+def estrusSows_data_choice(
+    data: pd.DataFrame,
+    time_choice,
+):
     data["sSowsNo"] = data["sSowsNo"].astype(str)
     # 所有发情母猪耳标号
     all_estrusSows_ear_codes = []
@@ -143,8 +133,8 @@ def estrusSows_data_choice(data: pd.DataFrame, time_choice):
         # last_time = 0
         if time != None:
             date_time = pd.to_datetime(f"{date.date()} {time.time()}")
-            prev_time = date_time - pd.Timedelta(hours=48)
-            # last_time = date_time + pd.Timedelta(days=1)
+            prev_time = date_time - pd.Timedelta(hours=WINDOW_SIZE)
+            last_time = date_time + pd.Timedelta(hours=SLIDING_WINDOW_SIZE)
 
             # 提取发情母猪数据
             for code in estrus_ear_tag_codes:
@@ -152,12 +142,33 @@ def estrusSows_data_choice(data: pd.DataFrame, time_choice):
                 estrusSows_dataset = pd.concat(
                     [
                         estrusSows_dataset,
-                        intercept_data(data, code, prev_time, date_time),
+                        intercept_data(data, code, prev_time, last_time),
                     ],
                     axis=0,
                     ignore_index=True,
                 )
-    return estrusSows_dataset
+
+    # 未发情母猪的数据
+    notEstrusSows_dataset = pd.DataFrame(columns=columns_name)
+    for code in data["sSowsNo"].drop_duplicates(keep="first").to_numpy():
+        if code in all_estrusSows_ear_codes:
+            continue
+        else:
+            notEstrusSows_dataset = pd.concat(
+                [
+                    notEstrusSows_dataset,
+                    intercept_data(data, code, start_time, end_time),
+                ],
+                axis=0,
+                ignore_index=True,
+            )
+
+    final_dataset = pd.DataFrame(columns=columns_name)
+    final_dataset = pd.concat(
+        [estrusSows_dataset, notEstrusSows_dataset], axis=0, ignore_index=True
+    ).sort_values(by=["sSowsNo", "tLastUploadTime"])
+
+    return final_dataset
 
 
 # 更新小时数据
@@ -327,7 +338,7 @@ def calculate_temperatureRate(
 def data_processing(
     source_dataset: pd.DataFrame,  # 数据集
     time_choice,  # 发情数据的时间选择
-    correct_temperature=True,  # 是否执行异常体温处理
+    correct_temperature=False,  # 是否执行异常体温处理
     resampling_method="mean",
     del_code=[],  # 要删除数据的编号
 ):
@@ -365,15 +376,15 @@ def data_processing(
         # 时间段
         if time != None:
             date_time = pd.to_datetime(f"{date.date()} {time.time()}")
-            prev_time = date_time - pd.Timedelta(hours=48)
-            # last_time = date_time + pd.Timedelta(days=1)
-            all_estrus_time.append(str(prev_time) + "~" + str(date_time))
+            prev_time = date_time - pd.Timedelta(hours=WINDOW_SIZE)
+            last_time = date_time + pd.Timedelta(hours=SLIDING_WINDOW_SIZE)
+            all_estrus_time.append(str(prev_time) + "~" + str(last_time))
 
             temp_list = []
             for code in str_ear_tag_codes.split(sep=","):
                 temp_list.append(code)
             estrus_ear_tag_codes.append(temp_list)
-            estrus_time.append(str(prev_time) + "~" + str(date_time))
+            estrus_time.append(str(prev_time) + "~" + str(last_time))
         else:
             for code in str_ear_tag_codes.split(sep=","):
                 unkonwnTime_ear_tag_codes.append(code)
@@ -401,7 +412,8 @@ def data_processing(
     )"""
     hourly_dataset = hourly_dataset[hourly_dataset["iTemperature"].notna()]
     # print(hourly_dataset.shape)
-    # 计算体温变化率
+
+    # -------------------- 计算体温变化率 --------------------
     cal_tempRate = calculate_temperatureRate(hourly_dataset, start_time, end_time)
     cal_tempRate["temperatureRate"] = cal_tempRate["temperatureRate"].fillna(0)
     # cal_tempRate.to_excel(test_data_path + "loss_of_time\\cal_tempRate.xlsx", index=False)
@@ -413,8 +425,11 @@ def data_processing(
     all_estrus_time_and_earCode = zip(estrus_time, estrus_ear_tag_codes)
     for row in all_estrus_time_and_earCode:
         # 发情时间段
-        estrus_end_time = row[0].split(sep="~")[-1]
-        estrus_start_time = pd.to_datetime(estrus_end_time) - pd.Timedelta(hours=1)
+        temp_time = row[0].split(sep="~")[-1]
+        estrus_end_time = pd.to_datetime(temp_time) + pd.Timedelta(
+            hours=SLIDING_WINDOW_SIZE
+        )
+        estrus_start_time = pd.to_datetime(temp_time) - pd.Timedelta(hours=1)
         # 根据耳号和发情时间段设置标签为1
         for code in row[1]:
             code_str = str(code)
@@ -431,81 +446,3 @@ def data_processing(
     # setLabels_dataset = setLabels_dataset[setLabels_dataset["iTemperature"] >= 34]
 
     return setLabels_dataset
-
-
-# 数据预处理 - 数据选择，特征转换，标签设置
-def data_choice(
-    data: pd.DataFrame,  # 数据
-    time_choice,  # 发情时间记录
-    window_size=48,  # 发情时间窗口大小 - 默认取发情前两天的数据
-    sliding_window_size=6,  # 滑动窗口大小 - 发情状态持续时间
-):
-    print("data_choice - Function Started")
-
-    estrusSows_dataset = pd.DataFrame()
-    conversion_dataset = pd.DataFrame()
-
-    all_estrusSows_ear_codes = []
-    for info in time_choice:  # 逐天获取发情母猪的信息
-        estrus_ear_tag_codes = []  # 所有发情母猪耳标代码
-        str_ear_tag_codes = info.split(sep="_")[-1]  # 当天发情母猪耳标代码
-        for code in str_ear_tag_codes.split(sep=","):
-            estrus_ear_tag_codes.append(str(code))
-            all_estrusSows_ear_codes.append(str(code))
-
-        # 发情日期
-        date = pd.to_datetime(info.split(sep="_")[0])
-        # 早上或下午
-        AorM = info.split(sep="_")[1]
-        time = None
-        if AorM == "A":
-            time = pd.to_datetime("16:00:00")
-        elif AorM == "M":
-            time = pd.to_datetime("09:00:00")
-
-        # 时间段
-        prev_time = 0
-        last_time = 0
-        if time != None:
-            date_time = pd.to_datetime(f"{date.date()} {time.time()}")  # 发情时刻
-
-            # 以滑动窗口形式获取发情母猪的数据
-            for size in range(0, sliding_window_size):
-                last_time = date_time + pd.Timedelta(hours=size)
-                prev_time = last_time - pd.Timedelta(hours=window_size)
-
-                # 提取发情母猪数据
-                for code in estrus_ear_tag_codes:
-                    code = str(code)
-                    estrusSows_dataset = pd.concat(
-                        [
-                            estrusSows_dataset,
-                            intercept_data(data, code, prev_time, last_time),
-                        ],
-                        axis=0,
-                        ignore_index=True,
-                    )
-
-    # 未发情母猪的数据
-    notEstrusSows_dataset = pd.DataFrame()
-    """for code in data["sSowsNo"].drop_duplicates(keep="first").to_numpy():
-        if code in all_estrusSows_ear_codes:
-            continue
-        else:
-            notEstrusSows_dataset = pd.concat(
-                [
-                    notEstrusSows_dataset,
-                    intercept_data(data, code, start_time, end_time),
-                ],
-                axis=0,
-                ignore_index=True,
-            )"""
-
-    final_dataset = pd.DataFrame(columns=columns_name)
-    final_dataset = pd.concat(
-        [estrusSows_dataset, notEstrusSows_dataset],
-        axis=0,
-        ignore_index=True,
-    ).sort_values(by=["sSowsNo", "tLastUploadTime"])
-
-    return final_dataset
