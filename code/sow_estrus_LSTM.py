@@ -29,3 +29,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
+
+data = pd.read_excel(
+    experimentRecord_data_path + "data_precessed.xlsx", index_col=False
+)

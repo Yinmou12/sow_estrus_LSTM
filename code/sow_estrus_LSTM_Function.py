@@ -377,7 +377,7 @@ def data_processing(
         if time != None:
             date_time = pd.to_datetime(f"{date.date()} {time.time()}")
             prev_time = date_time - pd.Timedelta(hours=WINDOW_SIZE)
-            last_time = date_time + pd.Timedelta(hours=SLIDING_WINDOW_SIZE)
+            last_time = date_time + pd.Timedelta(hours=SLIDING_WINDOW_SIZE + 1)
             all_estrus_time.append(str(prev_time) + "~" + str(last_time))
 
             temp_list = []
@@ -422,14 +422,14 @@ def data_processing(
     setLabels_dataset = cal_tempRate.copy()
     setLabels_dataset["sSowsNo"] = setLabels_dataset["sSowsNo"].astype(str)
     setLabels_dataset["isEstrus"] = 0
+    # estrus_time 的时间范围是 [发情时刻-48, 发情时刻+SLIDING_WINDOW_SIZE]
     all_estrus_time_and_earCode = zip(estrus_time, estrus_ear_tag_codes)
     for row in all_estrus_time_and_earCode:
         # 发情时间段
-        temp_time = row[0].split(sep="~")[-1]
-        estrus_end_time = pd.to_datetime(temp_time) + pd.Timedelta(
-            hours=SLIDING_WINDOW_SIZE
+        estrus_end_time = pd.to_datetime(row[0].split(sep="~")[-1])
+        estrus_start_time = estrus_end_time - pd.Timedelta(
+            hours=SLIDING_WINDOW_SIZE + 1
         )
-        estrus_start_time = pd.to_datetime(temp_time) - pd.Timedelta(hours=1)
         # 根据耳号和发情时间段设置标签为1
         for code in row[1]:
             code_str = str(code)
@@ -446,3 +446,13 @@ def data_processing(
     # setLabels_dataset = setLabels_dataset[setLabels_dataset["iTemperature"] >= 34]
 
     return setLabels_dataset
+
+
+# 特征构建
+def feature_construction(
+    data: pd.DataFrame,  # 函数data_processing处理之后的数据
+):
+    # 发情：检测到标签为1就获取该行及前47行的耳温数据
+
+    # 非发请：生成随机数（每头6个）获取48行数据
+    return None

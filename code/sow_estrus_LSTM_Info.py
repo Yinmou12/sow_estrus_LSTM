@@ -1,5 +1,5 @@
 WINDOW_SIZE = 48
-SLIDING_WINDOW_SIZE = 5
+SLIDING_WINDOW_SIZE = 6
 
 # 数据集列名
 columns_name = [
@@ -24,9 +24,10 @@ source_data_path = "D:\\_data_set\\母猪发情\\"  # 原始数据存放位置
 summary_data_path = (
     "D:\\_data_set\\sow_estrus\\summary_data\\"  # 添加新数据后的存放位置
 )
-experimentRecord_data_path = "D:\\_Software_Projects\\VSCode\\scientific_research\\sow_estrus\\my_code\\code\\data_sow_estrus_LSTM\\"  # 实验过程中的数据存放位置
+experimentRecord_data_path = "D:\\_Software_Projects\\VSCode\\scientific_research\\sow_estrus\\my_code\\code\\data\\"  # 实验过程中的数据存放位置
 test_data_path = "D:\\_Software_Projects\\VSCode\\scientific_research\\sow_estrus\\my_code\\temp_test_data\\"  # 测试的临时文件存放位置
 save_model_path = "D:\\_Software_Projects\\VSCode\\scientific_research\\sow_estrus\\my_code\\model\\sow_estrus_LSTM"  # 模型存放位置
+
 
 max_rows = 1048575  # 单表最大行数
 
