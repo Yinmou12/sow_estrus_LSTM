@@ -157,7 +157,7 @@ def estrusSows_data_choice(
             notEstrusSows_dataset = pd.concat(
                 [
                     notEstrusSows_dataset,
-                    intercept_data(data, code, start_time, end_time),
+                    intercept_data(data, code, START_TIME, END_TIME),
                 ],
                 axis=0,
                 ignore_index=True,
@@ -376,7 +376,7 @@ def data_processing(
         # 时间段
         if time != None:
             date_time = pd.to_datetime(f"{date.date()} {time.time()}")
-            prev_time = date_time - pd.Timedelta(hours=WINDOW_SIZE)
+            prev_time = date_time - pd.Timedelta(hours=WINDOW_SIZE + 1)
             last_time = date_time + pd.Timedelta(hours=SLIDING_WINDOW_SIZE + 1)
             all_estrus_time.append(str(prev_time) + "~" + str(last_time))
 
@@ -403,7 +403,7 @@ def data_processing(
     # -------------------- 计算小时数据 --------------------
     # 小时平均体温
     hourly_dataset = update_hourly_temperature_step(
-        choose_data, start_time, end_time, resampling_method
+        choose_data, START_TIME, END_TIME, resampling_method
     )
     # hourly_dataset.to_excel(test_data_path +"loss_of_time\\hourly_dataset.xlsx",index=False)
     # 小时最高体温
@@ -414,7 +414,7 @@ def data_processing(
     # print(hourly_dataset.shape)
 
     # -------------------- 计算体温变化率 --------------------
-    cal_tempRate = calculate_temperatureRate(hourly_dataset, start_time, end_time)
+    cal_tempRate = calculate_temperatureRate(hourly_dataset, START_TIME, END_TIME)
     cal_tempRate["temperatureRate"] = cal_tempRate["temperatureRate"].fillna(0)
     # cal_tempRate.to_excel(test_data_path + "loss_of_time\\cal_tempRate.xlsx", index=False)
 
@@ -448,11 +448,92 @@ def data_processing(
     return setLabels_dataset
 
 
+# 获取发情编号
+def get_estrus_earCode(time_choice):
+    estrus_earCode = []
+    for info in time_choice:
+        str_ear_tag_codes = info.split(sep="_")[-1]
+        for code in str_ear_tag_codes.split(sep=","):
+            estrus_earCode.append(code)
+    return estrus_earCode
+
+
+# 获取非发请编号
+def get_notEstrus_earCode(data: pd.DataFrame, estrus_earCode):
+    all_sows_earCode = data["sSowsNo"].drop_duplicates(keep="first").to_numpy()
+    notEstrus_earCode = []
+    for code in all_sows_earCode:
+        if code in estrus_earCode:
+            continue
+        else:
+            notEstrus_earCode.append(code)
+    return notEstrus_earCode
+
+
+# 数据填补
+def fill_data(
+    data: pd.DataFrame,
+    estrus_earCode,
+    several_eastrus_earCode,
+    notEStrus_earCode,
+):
+    filled_dataset = data.copy()
+    drop_earCode = []
+
+    # 发情母猪的数据填补
+    for index in estrus_earCode:
+        # 未再次发情 数据行数应为53
+        if index not in several_eastrus_earCode:
+            df = data[data["sSowsNo"] == index].copy()
+            if len(df) < 49:  #  缺失 > 4 丢弃
+                drop_earCode.append(index)
+                continue
+            else:  # 填补
+                sub_df = df.copy()
+                # 获取完整时间序列
+                first_time = sub_df["tLastUploadTime"].min()
+                last_time = sub_df["tLastUploadTime"].max()
+                full_time_index = pd.date_range(
+                    start=first_time, end=last_time, freq="h"
+                )
+                # 以完整时间序列为索引
+                sub_df = (
+                    sub_df.set_index("tLastUploadTime")
+                    .reindex(full_time_index)
+                    .reset_index()
+                    .rename(columns={"index": "tLastUploadTime"})
+                )
+                # 填充其它列
+                for col in [
+                    "sEarTagCode",
+                    "sSowsNo",
+                    "sBrand",
+                    "dBreedDate",
+                    "dWeanDate",
+                    "iTemperature",
+                    "isEstrus",
+                ]:
+                    sub_df[col] = sub_df[col].ffill()
+
+                # 步数采用均值填补
+                mean_iStep = sub_df["iStep"].mean()
+                sub_df["iStep"] = sub_df["iStep"].fillna(mean_iStep)
+
+                # 填充temperatureRate为0
+                sub_df["temperatureRate"] = sub_df["temperatureRate"].fillna(0)
+
+                filled_dataset = filled_dataset[filled_dataset["sSowsNo"] != index]
+                filled_dataset = pd.concat([filled_dataset, sub_df], ignore_index=True)
+        # else: # 再次发情
+
+    return None
+
+
 # 特征构建
 def feature_construction(
     data: pd.DataFrame,  # 函数data_processing处理之后的数据
 ):
     # 发情：检测到标签为1就获取该行及前47行的耳温数据
 
-    # 非发请：生成随机数（每头6个）获取48行数据
+    # 非发请：暂定生成1个随机数获取连续的57行数据并拆分为10段连续的48小时数据
     return None

@@ -17,16 +17,21 @@ columns_name = [
 columns_temperatures = [f"temperature_{i}" for i in range(1, 49)]
 
 # 起始和结束时间只需包含整个数据集中的时间跨度
-start_time = "2024-11-08 00:00:00"  # 起始时间
-end_time = "2029-12-28 00:00:00"  # 结束时间
+START_TIME = "2024-11-08 00:00:00"  # 起始时间
+END_TIME = "2029-12-28 00:00:00"  # 结束时间
 
 source_data_path = "D:\\_data_set\\母猪发情\\"  # 原始数据存放位置
 summary_data_path = (
     "D:\\_data_set\\sow_estrus\\summary_data\\"  # 添加新数据后的存放位置
 )
-experimentRecord_data_path = "D:\\_Software_Projects\\VSCode\\scientific_research\\sow_estrus\\my_code\\code\\data\\"  # 实验过程中的数据存放位置
-test_data_path = "D:\\_Software_Projects\\VSCode\\scientific_research\\sow_estrus\\my_code\\temp_test_data\\"  # 测试的临时文件存放位置
-save_model_path = "D:\\_Software_Projects\\VSCode\\scientific_research\\sow_estrus\\my_code\\model\\sow_estrus_LSTM"  # 模型存放位置
+# 实验过程中的数据存放位置
+experimentRecord_data_path = (
+    "D:\\_Software_Projects\\VSCode\\scientific_research\\sow_estrus\\my_code\\data\\"
+)
+# 测试的临时文件存放位置
+test_data_path = "D:\\_Software_Projects\\VSCode\\scientific_research\\sow_estrus\\my_code\\temp_test_data\\"
+# 模型存放位置
+save_model_path = "D:\\_Software_Projects\\VSCode\\scientific_research\\sow_estrus\\my_code\\model\\sow_estrus_LSTM"
 
 
 max_rows = 1048575  # 单表最大行数
