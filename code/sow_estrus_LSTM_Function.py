@@ -142,7 +142,7 @@ def estrusSows_data_choice(
                 estrusSows_dataset = pd.concat(
                     [
                         estrusSows_dataset,
-                        intercept_data(data, code, prev_time, last_time),
+                        data[data["sSowsNo"] == code],
                     ],
                     axis=0,
                     ignore_index=True,
@@ -157,7 +157,7 @@ def estrusSows_data_choice(
             notEstrusSows_dataset = pd.concat(
                 [
                     notEstrusSows_dataset,
-                    intercept_data(data, code, START_TIME, END_TIME),
+                    data[data["sSowsNo"] == code],
                 ],
                 axis=0,
                 ignore_index=True,
@@ -345,13 +345,12 @@ def data_processing(
     record_dataset = source_dataset.copy()
     # record_dataset = record_dataset[record_dataset["iTemperature"] > 25]
     record_dataset["sSowsNo"] = record_dataset["sSowsNo"].astype(str)
+    delCode_dataset = record_dataset.copy()
     # 删除一些异常数据
     if len(del_code) > 0:
-        record_dataset["sSowsNo"] = record_dataset["sSowsNo"].astype(str)
         for code in del_code:
             code_str = str(code)
             record_dataset = record_dataset[record_dataset["sSowsNo"] != code_str]
-    # print(record_dataset.shape)
 
     # -------------------- 获取发情时间，编号 --------------------
     estrus_time = []
@@ -460,6 +459,7 @@ def get_estrus_earCode(time_choice):
 
 # 获取非发请编号
 def get_notEstrus_earCode(data: pd.DataFrame, estrus_earCode):
+    data["sSowsNo"] = data["sSowsNo"].astype(str)
     all_sows_earCode = data["sSowsNo"].drop_duplicates(keep="first").to_numpy()
     notEstrus_earCode = []
     for code in all_sows_earCode:
@@ -468,6 +468,48 @@ def get_notEstrus_earCode(data: pd.DataFrame, estrus_earCode):
         else:
             notEstrus_earCode.append(code)
     return notEstrus_earCode
+
+
+# 拆分多次发情的数据
+def split_estrusData(data: pd.DataFrame, estrus_earCode, threshold: int):
+    data["sSowsNo"] = data["sSowsNo"].astype("str")
+    # 确保确保时间列是 datetime 类型并排序
+    data["tLastUploadTime"] = pd.to_datetime(data["tLastUploadTime"])
+    data = data.sort_values(by=["sSowsNo", "tLastUploadTime"])
+
+    splited_dataset = pd.DataFrame()
+
+    # 获取多次发情的耳标号
+    several_estrus_ear_tag_codes = set()
+    estrus_ear_tag_codes = []
+    for info in time_choice:
+        str_ear_tag_codees = info.split(sep="_")[-1]
+        for each_code in str_ear_tag_codees.split(sep=","):
+            each_code = str(each_code)
+            if each_code in estrus_ear_tag_codes:
+                several_estrus_ear_tag_codes.add(each_code)
+            else:
+                estrus_ear_tag_codes.append(each_code)
+    print(sorted(several_estrus_ear_tag_codes))
+    print(len(several_estrus_ear_tag_codes))
+
+    # 分离多次发情的母猪的数据
+    for earCode in several_estrus_ear_tag_codes:
+        earCode = str(earCode)
+        subset = data[data["sSowsNo"] == earCode].copy()
+
+        delta_limit = pd.Timedelta(days=threshold)
+        is_new_period = subset["tLastUploadTime"].diff() > delta_limit
+        subset["preiod_group"] = is_new_period.cumsum()
+
+        for group_id, group_df in subset.groupby("preiod_group"):
+            group_df = group_df.copy()
+            group_df["sSowsNo"] = group_df["sSowsNo"] + "_" + str(group_id + 1)
+            splited_dataset = pd.concat(
+                [splited_dataset, group_df], ignore_index=True
+            ).sort_values(by=["sSowsNo", "tLastUploadTime"])
+
+    return splited_dataset
 
 
 # 数据填补
@@ -479,6 +521,9 @@ def fill_data(
 ):
     filled_dataset = data.copy()
     drop_earCode = []
+
+    estrus_dataset = pd.DataFrame()
+    notEstrus_dataset = pd.DataFrame()
 
     # 发情母猪的数据填补
     for index in estrus_earCode:
