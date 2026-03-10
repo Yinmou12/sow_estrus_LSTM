@@ -18,7 +18,7 @@ for sheet_name, sheet_data in dataset.items():
         计算温度变化率
         设置标签
 """
-temp_dataset = myFunction.data_processing(data, time_choice, False, "mean", DEL_CODE)
+temp_dataset = myFunction.data_processing(data, TIME_CHOICE, False, "mean", DEL_CODE)
 temp_dataset.to_excel(test_data_path + "测试data_precessing函数.xlsx", index=False)
 
 """

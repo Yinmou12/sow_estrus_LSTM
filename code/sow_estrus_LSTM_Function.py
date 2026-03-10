@@ -365,9 +365,9 @@ def data_processing(
 
         time = None
         if AorM == "A":
-            time = pd.to_datetime("16:00:00")
+            time = pd.to_datetime("15:00:00")
         elif AorM == "M":
-            time = pd.to_datetime("09:00:00")
+            time = pd.to_datetime("08:00:00")
 
         # 耳号
         str_ear_tag_codes = info.split(sep="_")[-1]
@@ -375,8 +375,8 @@ def data_processing(
         # 时间段
         if time != None:
             date_time = pd.to_datetime(f"{date.date()} {time.time()}")
-            prev_time = date_time - pd.Timedelta(hours=WINDOW_SIZE + 1)
-            last_time = date_time + pd.Timedelta(hours=SLIDING_WINDOW_SIZE + 1)
+            prev_time = date_time - pd.Timedelta(hours=WINDOW_SIZE)
+            last_time = date_time + pd.Timedelta(hours=SLIDING_WINDOW_SIZE)
             all_estrus_time.append(str(prev_time) + "~" + str(last_time))
 
             temp_list = []
@@ -426,9 +426,7 @@ def data_processing(
     for row in all_estrus_time_and_earCode:
         # 发情时间段
         estrus_end_time = pd.to_datetime(row[0].split(sep="~")[-1])
-        estrus_start_time = estrus_end_time - pd.Timedelta(
-            hours=SLIDING_WINDOW_SIZE + 1
-        )
+        estrus_start_time = estrus_end_time - pd.Timedelta(hours=SLIDING_WINDOW_SIZE)
         # 根据耳号和发情时间段设置标签为1
         for code in row[1]:
             code_str = str(code)
@@ -471,7 +469,7 @@ def get_notEstrus_earCode(data: pd.DataFrame, estrus_earCode):
 
 
 # 拆分多次发情的数据
-def split_estrusData(data: pd.DataFrame, estrus_earCode, threshold: int):
+def split_estrusData(data: pd.DataFrame, estrusTime, threshold: int):
     data["sSowsNo"] = data["sSowsNo"].astype("str")
     # 确保确保时间列是 datetime 类型并排序
     data["tLastUploadTime"] = pd.to_datetime(data["tLastUploadTime"])
@@ -482,7 +480,7 @@ def split_estrusData(data: pd.DataFrame, estrus_earCode, threshold: int):
     # 获取多次发情的耳标号
     several_estrus_ear_tag_codes = set()
     estrus_ear_tag_codes = []
-    for info in time_choice:
+    for info in estrusTime:
         str_ear_tag_codees = info.split(sep="_")[-1]
         for each_code in str_ear_tag_codees.split(sep=","):
             each_code = str(each_code)
