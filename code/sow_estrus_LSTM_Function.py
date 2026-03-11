@@ -142,7 +142,9 @@ def estrusSows_data_choice(
                 estrusSows_dataset = pd.concat(
                     [
                         estrusSows_dataset,
-                        data[data["sSowsNo"] == code],
+                        intercept_data(
+                            data[data["sSowsNo"] == code], code, prev_time, last_time
+                        ),
                     ],
                     axis=0,
                     ignore_index=True,
@@ -426,7 +428,9 @@ def data_processing(
     for row in all_estrus_time_and_earCode:
         # 发情时间段
         estrus_end_time = pd.to_datetime(row[0].split(sep="~")[-1])
-        estrus_start_time = estrus_end_time - pd.Timedelta(hours=SLIDING_WINDOW_SIZE)
+        estrus_start_time = estrus_end_time - pd.Timedelta(
+            hours=SLIDING_WINDOW_SIZE + 1
+        )
         # 根据耳号和发情时间段设置标签为1
         for code in row[1]:
             code_str = str(code)
@@ -468,14 +472,16 @@ def get_notEstrus_earCode(data: pd.DataFrame, estrus_earCode):
     return notEstrus_earCode
 
 
-# 拆分多次发情的数据
+# 拆分多次发情的数据并更新发情编号
 def split_estrusData(data: pd.DataFrame, estrusTime, threshold: int):
     data["sSowsNo"] = data["sSowsNo"].astype("str")
     # 确保确保时间列是 datetime 类型并排序
     data["tLastUploadTime"] = pd.to_datetime(data["tLastUploadTime"])
     data = data.sort_values(by=["sSowsNo", "tLastUploadTime"])
+    record_dataset = data.copy()
 
     splited_dataset = pd.DataFrame()
+    final_dataset = pd.DataFrame()
 
     # 获取多次发情的耳标号
     several_estrus_ear_tag_codes = set()
@@ -488,6 +494,9 @@ def split_estrusData(data: pd.DataFrame, estrusTime, threshold: int):
                 several_estrus_ear_tag_codes.add(each_code)
             else:
                 estrus_ear_tag_codes.append(each_code)
+    for del_earCode in DEL_CODE:
+        del_earCode = str(del_earCode)
+        several_estrus_ear_tag_codes.discard(del_earCode)
     print(sorted(several_estrus_ear_tag_codes))
     print(len(several_estrus_ear_tag_codes))
 
@@ -507,69 +516,71 @@ def split_estrusData(data: pd.DataFrame, estrusTime, threshold: int):
                 [splited_dataset, group_df], ignore_index=True
             ).sort_values(by=["sSowsNo", "tLastUploadTime"])
 
-    return splited_dataset
+        # 删掉多次发情的耳标对应的数据
+        record_dataset = record_dataset[record_dataset["sSowsNo"] != earCode]
+
+    splited_dataset = splited_dataset.drop(columns="preiod_group")
+    final_dataset = pd.concat(
+        [record_dataset, splited_dataset], ignore_index=True
+    ).sort_values(by=["sSowsNo", "tLastUploadTime"])
+
+    new_estrus_earCodes = []
+    for earCode in estrus_ear_tag_codes:
+        earCode = str(earCode)
+        if earCode in several_estrus_ear_tag_codes:
+            estrus_ear_tag_codes.remove(earCode)
+        else:
+            new_estrus_earCodes.append(earCode)
+
+    for earCode in splited_dataset["sSowsNo"].drop_duplicates(keep="first").tolist():
+        new_estrus_earCodes.append(earCode)
+
+    new_estrus_earCodes.sort()
+    return final_dataset, new_estrus_earCodes
+
+
+# 更新发情编号
+def updata_estrus_earCode(data: pd.DataFrame, estrus_code):
+    final_estrusCode = []
+
+    return final_estrusCode
+
+
+#
+def temp_function(data: pd.DataFrame, estrus_label: bool):
+    record_dataset = data.copy()
+    # if estrus_label==True and len(record_dataset) >=
 
 
 # 数据填补
 def fill_data(
     data: pd.DataFrame,
-    estrus_earCode,
-    several_eastrus_earCode,
-    notEStrus_earCode,
+    estrus_earCode,  # 发情编号
+    notEStrus_earCode,  # 非发情编号
 ):
-    filled_dataset = data.copy()
-    drop_earCode = []
+    record_dataset = data.copy()
+    filled_dataset = pd.DataFrame()
 
+    # 丢弃的耳标编号
+    drop_estrus_earCode = {}
+    drop_notEstrus_earCode = {}
+
+    # 存放发情和非发情填补后的数据
     estrus_dataset = pd.DataFrame()
     notEstrus_dataset = pd.DataFrame()
 
-    # 发情母猪的数据填补
-    for index in estrus_earCode:
-        # 未再次发情 数据行数应为53
-        if index not in several_eastrus_earCode:
-            df = data[data["sSowsNo"] == index].copy()
-            if len(df) < 49:  #  缺失 > 4 丢弃
-                drop_earCode.append(index)
-                continue
-            else:  # 填补
-                sub_df = df.copy()
-                # 获取完整时间序列
-                first_time = sub_df["tLastUploadTime"].min()
-                last_time = sub_df["tLastUploadTime"].max()
-                full_time_index = pd.date_range(
-                    start=first_time, end=last_time, freq="h"
-                )
-                # 以完整时间序列为索引
-                sub_df = (
-                    sub_df.set_index("tLastUploadTime")
-                    .reindex(full_time_index)
-                    .reset_index()
-                    .rename(columns={"index": "tLastUploadTime"})
-                )
-                # 填充其它列
-                for col in [
-                    "sEarTagCode",
-                    "sSowsNo",
-                    "sBrand",
-                    "dBreedDate",
-                    "dWeanDate",
-                    "iTemperature",
-                    "isEstrus",
-                ]:
-                    sub_df[col] = sub_df[col].ffill()
+    for earCode in estrus_earCode:
+        earCode = str(earCode)
+        sub_dataset = record_dataset[record_dataset["sSowsNo"] == earCode]
+        label_count = sub_dataset["isEstrus"].count()
+        if label_count < SLIDING_WINDOW_SIZE:
+            drop_estrus_earCode[earCode] = label_count
+            continue
+        else:
 
-                # 步数采用均值填补
-                mean_iStep = sub_df["iStep"].mean()
-                sub_df["iStep"] = sub_df["iStep"].fillna(mean_iStep)
+            return None
 
-                # 填充temperatureRate为0
-                sub_df["temperatureRate"] = sub_df["temperatureRate"].fillna(0)
-
-                filled_dataset = filled_dataset[filled_dataset["sSowsNo"] != index]
-                filled_dataset = pd.concat([filled_dataset, sub_df], ignore_index=True)
-        # else: # 再次发情
-
-    return None
+    return filled_dataset
 
 
 # 特征构建
