@@ -18,10 +18,25 @@ for sheet_name, sheet_data in dataset.items():
         计算温度变化率
         设置标签
 """
-temp_dataset = myFunction.data_processing(data, TIME_CHOICE, False, "mean", DEL_CODE)
-temp_dataset.to_excel(test_data_path + "测试data_precessing函数.xlsx", index=False)
+processed_dataset = myFunction.data_processing(
+    data, TIME_CHOICE, False, "mean", DEL_CODE
+)
 
 """
-    特征构建：
-    
+    拆分多次发情的数据并更新发情编号
 """
+splited_dataset = myFunction.split_estrusData(processed_dataset, TIME_CHOICE, 7)
+
+"""
+    数据填补
+"""
+filled_dataset, drop_estrus_earCode, drop_notEStrus_earCode = myFunction.fill_data(
+    splited_dataset
+)
+
+"""
+    特征构建
+"""
+feature_constructed = myFunction.feature_construction(filled_dataset)
+
+feature_constructed.to_excel(experimentRecord_data_path + "final_data_1.xlsx")

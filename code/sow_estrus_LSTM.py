@@ -31,5 +31,6 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
 data = pd.read_excel(
-    experimentRecord_data_path + "data_precessed.xlsx", index_col=False
+    experimentRecord_data_path + "data_processed\\feature_constructed.xlsx",
+    index_col=False,
 )

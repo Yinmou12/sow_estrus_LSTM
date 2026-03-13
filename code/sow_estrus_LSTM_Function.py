@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import os as os
+import random
 
 
 # 数据提取
@@ -134,7 +135,7 @@ def estrusSows_data_choice(
         if time != None:
             date_time = pd.to_datetime(f"{date.date()} {time.time()}")
             prev_time = date_time - pd.Timedelta(hours=WINDOW_SIZE)
-            last_time = date_time + pd.Timedelta(hours=SLIDING_WINDOW_SIZE)
+            last_time = date_time + pd.Timedelta(hours=SLIDING_WINDOW_SIZE - 1)
 
             # 提取发情母猪数据
             for code in estrus_ear_tag_codes:
@@ -538,9 +539,14 @@ def update_estrus_earCode(data: pd.DataFrame):
 
 #
 def function_filled(data: pd.DataFrame):
+    if data.empty:
+        return data
+
     record_dataset = data.copy()
-    first_time = record_dataset["tlastUploadTime"].min()
-    last_time = record_dataset["tlastUploadTime"].max()
+    # 避免出现重复时间点
+    record_dataset = record_dataset.drop_duplicates(subset=["tLastUploadTime"])
+    first_time = record_dataset["tLastUploadTime"].min()
+    last_time = record_dataset["tLastUploadTime"].max()
     full_time_range = pd.date_range(start=first_time, end=last_time, freq="1h")
     # 以完整时间序列为索引重新索引数据
     record_dataset = (
@@ -551,7 +557,7 @@ def function_filled(data: pd.DataFrame):
     )
 
     # 填充其他列
-    for col in [
+    fill_cols = [
         "sEarTagCode",
         "sSowsNo",
         "sBrand",
@@ -559,15 +565,19 @@ def function_filled(data: pd.DataFrame):
         "dWeanDate",
         "iTemperature",
         "isEstrus",
-    ]:
-        record_dataset = record_dataset[col].ffill()
+    ]
+    for col in fill_cols:
+        if col in record_dataset.columns:
+            record_dataset[col] = record_dataset[col].ffill()
 
-    # 计算 iStep 的均值并填充缺失值
-    mean_iStep = record_dataset["iStep"].mean()
-    record_dataset["iStep"] = record_dataset["iStep"].fillna(mean_iStep)
+    # 填充数值列
+    if "iStep" in record_dataset.columns:
+        mean_iStep = record_dataset["iStep"].mean()
+        record_dataset["iStep"] = record_dataset["iStep"].fillna(mean_iStep)
 
-    # 将 temperatureRate 填充为 0
-    record_dataset["temperatureRate"] = record_dataset["temperatureRate"].fillna(0)
+    if "temperatureRate" in record_dataset.columns:
+        record_dataset["temperatureRate"] = record_dataset["temperatureRate"].fillna(0)
+
     return record_dataset
 
 
@@ -590,6 +600,7 @@ def fill_data(
     # 确保耳标编号为 str 类型
     data["sSowsNo"] = data["sSowsNo"].astype(str)
     record_dataset = data.copy()
+    original_columns = data.columns.tolist()
 
     # 获取发情和非发情母猪的耳标编号
     estrus_df = record_dataset[record_dataset["isEstrus"] == 1]
@@ -622,39 +633,103 @@ def fill_data(
             earCode_estrusCount[earCode] = estrusLabelCount
         elif isContinuous == False:
             # 发情时间不连续不做填补直接丢弃
-            drop_estrus_earCode[earCode] = "Estrus time not continuous."
+            drop_estrus_earCode[earCode] = "Estrus time not continuous"
             continue
 
         # 发情时间连续则对发情前的数据进行填补
-        beforeEstrus_rows = record_dataset[record_dataset["isEstrus"] == 0].sort_values(
+        beforeEstrus_rows = sub_df[sub_df["isEstrus"] == 0].sort_values(
             "tLastUploadTime"
         )
         beforeEstrusLabelCount = len(beforeEstrus_rows)
         if beforeEstrusLabelCount >= 43:
+            beforeEstrus_dataset = function_filled(beforeEstrus_rows)
+            temp_df = pd.concat(
+                [beforeEstrus_dataset, estrus_rows], axis=0, ignore_index=True
+            )
             estrus_dataset = pd.concat(
-                [estrus_dataset, function_filled(beforeEstrus_rows)],
-                axis=0,
-                ignore_index=True,
+                [estrus_dataset, temp_df], axis=0, ignore_index=True
             )
         else:
-            drop_estrus_earCode[earCode] = "Insufficient pre-estrus data."
+            drop_estrus_earCode[earCode] = "Insufficient pre-estrus data"
             continue
 
+    final_dataset = pd.concat(
+        [final_dataset, estrus_dataset], axis=0, ignore_index=True
+    )
     # 非发情母猪的数据处理
+    replace_earCode = []
     for earCode in notEstrus_earCodes:
         sub_df = record_dataset[record_dataset["sSowsNo"] == earCode].sort_values(
             "tLastUploadTime"
         )
-        # 生成随机数根据WINDOW_SIZE选择数据判断时间缺失
 
-    return final_dataset
+        total_len = len(sub_df)
+        if total_len < WINDOW_SIZE:
+            drop_notEStrus_earCode[earCode] = (
+                f"Data length({total_len}) less than WINDOW_SIZE"
+            )
+            continue
+
+        # 每头母猪生成10随机数根据WINDOW_SIZE(默认48)选择数据判断时间缺失
+        max_start_idx = total_len - WINDOW_SIZE
+        sample_indices = [random.randint(0, max_start_idx) for _ in range(SAMPLE_COUNT)]
+        sample_count_success = 0
+        for i, start_idx in enumerate(sample_indices):
+            # 起始和结束时间
+            start_time = sub_df.iloc[start_idx]["tLastUploadTime"]
+            end_time = start_time + pd.Timedelta(hours=WINDOW_SIZE)
+
+            window_df = sub_df[
+                (sub_df["tLastUploadTime"] >= start_time)
+                & (sub_df["tLastUploadTime"] < end_time)
+            ].copy()
+
+            actual_len = len(window_df)
+            if actual_len >= 44:
+                replace_earCode.append(earCode)
+                window_df["sSowsNo"] = f"{earCode}_neg_{i+1}"
+                notEstrus_dataset = pd.concat(
+                    [notEstrus_dataset, function_filled(window_df)],
+                    axis=0,
+                    ignore_index=True,
+                )
+            else:
+                drop_notEStrus_earCode[earCode] = "Insufficient pre-estrus data"
+                continue
+
+    final_dataset = pd.concat(
+        [final_dataset, notEstrus_dataset], axis=0, ignore_index=True
+    ).sort_values(by=["sSowsNo", "tLastUploadTime"])
+    return final_dataset, drop_estrus_earCode, drop_notEStrus_earCode
 
 
 # 特征构建
 def feature_construction(
     data: pd.DataFrame,  # 函数data_processing处理之后的数据
 ):
-    # 发情：检测到标签为1就获取该行及前47行的耳温数据
+    record_dataset = data.copy()
+    record_dataset = record_dataset.sort_values(by=["sSowsNo", "tLastUploadTime"])
 
-    # 非发请：暂定生成1个随机数获取连续的57行数据并拆分为10段连续的48小时数据
-    return None
+    all_samples = []  # 用于存储构建好的特征行
+    for earCode in record_dataset["sSowsNo"].drop_duplicates(keep="first").tolist():
+        sub_df = record_dataset[record_dataset["sSowsNo"] == earCode]
+        dataLength = len(sub_df)
+        # 体温数据序列
+        temp_series = sub_df["iTemperature"].values
+        if dataLength >= WINDOW_SIZE:
+            label = 1 if "neg" not in str(earCode) else 0
+            # 滑动窗口截取
+            for start in range(dataLength - WINDOW_SIZE + 1):
+                window = temp_series[start : start + WINDOW_SIZE]
+                feature_dict = {f"temp_{i}": window[i] for i in range(WINDOW_SIZE)}
+                feature_dict["sSowsNo"] = earCode
+                feature_dict["isEstrus"] = label
+
+                all_samples.append(feature_dict)
+        elif dataLength < WINDOW_SIZE:
+            continue
+
+    result_df = pd.DataFrame(all_samples)
+    cols = ["sSowsNo", "isEstrus"] + [f"temp_{i}" for i in range(WINDOW_SIZE)]
+    result_df = result_df[cols]
+    return result_df
