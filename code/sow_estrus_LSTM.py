@@ -10,27 +10,23 @@ import sow_estrus_LSTM_Function as myFunction
 import joblib
 import matplotlib.pyplot as plt
 import numpy as np
+import os
 import pandas as pd
 
-from sklearn.metrics import (
-    classification_report,
-    accuracy_score,
-    precision_score,
-    f1_score,
-    recall_score,
-    confusion_matrix,
-    mean_squared_error,
-    r2_score,
-    log_loss,
-    roc_auc_score,
-)
-
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader, TensorDataset
+save_path = result_save_path + "Filename"
 
 data = pd.read_excel(
-    experimentRecord_data_path + "data_processed\\feature_constructed.xlsx",
-    index_col=False,
+    experimentRecord_data_path + "data_precessed\\filled_dataset.xlsx", index_col=False
 )
+
+# 分层分组划分数据集，确保同一母猪的数据不会同时出现在训练集、验证集和测试集中
+train_df, val_df, test_df = myFunction.stratified_group_split(data)
+
+# 划分数据集并进行标准化处理，准备输入 LSTM 模型的格式
+X_train, y_train, train_scaler = myFunction.prepare_univariate_lstm_data(train_df)
+X_val, y_val, _ = myFunction.prepare_univariate_lstm_data(val_df, train_scaler)
+X_test, y_test, _ = myFunction.prepare_univariate_lstm_data(test_df, train_scaler)
+
+os.makedirs(save_path, exist_ok=True)
+joblib.dump(train_scaler, save_path)
+print(f"Scaler saved to {save_path}")

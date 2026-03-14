@@ -31,8 +31,10 @@ experimentRecord_data_path = (
 )
 # 测试的临时文件存放位置
 test_data_path = "D:\\_Software_Projects\\VSCode\\scientific_research\\sow_estrus\\my_code\\temp_test_data\\"
-# 模型存放位置
-save_model_path = "D:\\_Software_Projects\\VSCode\\scientific_research\\sow_estrus\\my_code\\model\\sow_estrus_LSTM"
+# 结果存放位置 -- scaler,模型,结果图等
+result_save_path = (
+    "D:\\_Software_Projects\\VSCode\\scientific_research\\sow_estrus\\my_code\\result\\"
+)
 
 
 max_rows = 1048575  # 单表最大行数

@@ -7,6 +7,8 @@ import numpy as np
 import pandas as pd
 import os as os
 import random
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 
 
 # 数据提取
@@ -733,3 +735,82 @@ def feature_construction(
     cols = ["sSowsNo", "isEstrus"] + [f"temp_{i}" for i in range(WINDOW_SIZE)]
     result_df = result_df[cols]
     return result_df
+
+
+# 分层分组划分数据集，确保同一母猪的数据不会同时出现在训练集、验证集和测试集中
+def stratified_group_split(df, train_ratio=0.7, val_ratio=0.1, test_ratio=0.2):
+    estrus_sows = df[df["isEstrus"] == 1]["sSowsNo"].unique()
+    all_rows = df["sSowsNo"].unique()
+    not_estrus_sows = np.array([sow for sow in all_rows if sow not in estrus_sows])
+
+    # 对发情组进行划分
+    e_train, e_temp = train_test_split(
+        estrus_sows, test_size=1 - train_ratio, random_state=123
+    )
+    # 计算验证集和测试集的相对比例
+    val_size_relative = val_ratio / (val_ratio + test_ratio)
+    e_val, e_test = train_test_split(
+        e_temp, test_size=1 - val_size_relative, random_state=123
+    )
+
+    # 对非发情组进行划分
+    n_train, n_temp = train_test_split(
+        not_estrus_sows, test_size=1 - train_ratio, random_state=123
+    )
+    n_val, n_test = train_test_split(
+        n_temp, test_size=1 - val_size_relative, random_state=123
+    )
+
+    # 合并列表
+    final_train_ids = np.concatenate([e_train, n_train])
+    final_val_ids = np.concatenate([e_val, n_val])
+    final_test_ids = np.concatenate([e_test, n_test])
+
+    # 根据划分的ID创建训练集、验证集和测试集
+    train_df = df[df["sSowsNo"].isin(final_train_ids)].copy()
+    val_df = df[df["sSowsNo"].isin(final_val_ids)].copy()
+    test_df = df[df["sSowsNo"].isin(final_test_ids)].copy()
+
+    print(f"------ 划分结果 ------")
+    print(
+        f"训练集：猪只总数 {len(final_train_ids)},其中发情猪 {len(e_train)},非发情猪 {len(n_train)}"
+    )
+    print(
+        f"验证集：猪只总数 {len(final_val_ids)},其中发情猪 {len(e_val)},非发情猪 {len(n_val)}"
+    )
+    print(
+        f"测试集：猪只总数 {len(final_test_ids)},其中发情猪 {len(e_test)},非发情猪 {len(n_test)}"
+    )
+
+    return train_df, val_df, test_df
+
+
+# 仅考虑体温特征的单变量LSTM数据准备
+def prepare_univariate_lstm_data(data: pd.DataFrame, scaler=None):
+    feature_col = "iTemperature"
+
+    df_copy = data.copy()
+    temp_values = df_copy[feature_col].values.reshape(-1, 1)
+
+    if scaler is None:
+        scaler = StandardScaler()
+        df_copy[feature_col] = scaler.fit_transform(temp_values)
+    else:
+        df_copy[feature_col] = scaler.transform(temp_values)
+
+    X_list, y_list = [], []
+    for earCode, group in df_copy.groupby("sSowsNo"):
+        group = group.sort_values("tLastUploadTime")
+        vals = group[feature_col].values
+        labels = group["isEstrus"].values
+
+        if len(vals) >= WINDOW_SIZE:
+            for start in range(len(vals) - WINDOW_SIZE + 1):
+                X_list.append(vals[start : start + WINDOW_SIZE])
+                y_list.append(labels[start + WINDOW_SIZE - 1])
+
+    X = np.array(X_list)
+    y = np.expand_dims(X, axis=-1)
+    y = np.array(y_list)
+
+    return X, y, scaler
