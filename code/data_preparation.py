@@ -34,9 +34,12 @@ filled_dataset, drop_estrus_earCode, drop_notEStrus_earCode = myFunction.fill_da
     splited_dataset
 )
 
+filled_dataset.to_excel(
+    experimentRecord_data_path + "filled_dataset_SLIDING_WINDOW_SIZE(1)_1.xlsx"
+)
 """
     特征构建
 """
-feature_constructed = myFunction.feature_construction(filled_dataset)
+"""feature_constructed = myFunction.feature_construction(filled_dataset)
 
-feature_constructed.to_excel(experimentRecord_data_path + "final_data_1.xlsx")
+feature_constructed.to_excel(experimentRecord_data_path + "final_data_1.xlsx")"""
