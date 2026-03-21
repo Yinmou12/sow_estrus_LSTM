@@ -7,6 +7,15 @@ import numpy as np
 import pandas as pd
 import os as os
 import random
+import seaborn as sns
+from sklearn.metrics import (
+    confusion_matrix,
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_auc_score,
+)
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 
@@ -127,17 +136,17 @@ def estrusSows_data_choice(
         AorM = info.split(sep="_")[1]
         time = None
         if AorM == "A":
-            time = pd.to_datetime("16:00:00")
+            time = pd.to_datetime("14:00:00")
         elif AorM == "M":
-            time = pd.to_datetime("09:00:00")
+            time = pd.to_datetime("07:00:00")
 
         # 时间段
         prev_time = 0
         # last_time = 0
         if time != None:
             date_time = pd.to_datetime(f"{date.date()} {time.time()}")
-            prev_time = date_time - pd.Timedelta(hours=WINDOW_SIZE)
-            last_time = date_time + pd.Timedelta(hours=SLIDING_WINDOW_SIZE - 1)
+            prev_time = date_time - pd.Timedelta(hours=WINDOW_SIZE - 1)
+            last_time = date_time + pd.Timedelta(hours=SLIDING_WINDOW_SIZE)
 
             # 提取发情母猪数据
             for code in estrus_ear_tag_codes:
@@ -370,9 +379,9 @@ def data_processing(
 
         time = None
         if AorM == "A":
-            time = pd.to_datetime("15:00:00")
+            time = pd.to_datetime("14:00:00")
         elif AorM == "M":
-            time = pd.to_datetime("08:00:00")
+            time = pd.to_datetime("07:00:00")
 
         # 耳号
         str_ear_tag_codes = info.split(sep="_")[-1]
@@ -380,7 +389,7 @@ def data_processing(
         # 时间段
         if time != None:
             date_time = pd.to_datetime(f"{date.date()} {time.time()}")
-            prev_time = date_time - pd.Timedelta(hours=WINDOW_SIZE)
+            prev_time = date_time - pd.Timedelta(hours=WINDOW_SIZE - 1)
             last_time = date_time + pd.Timedelta(hours=SLIDING_WINDOW_SIZE)
             all_estrus_time.append(str(prev_time) + "~" + str(last_time))
 
@@ -430,17 +439,19 @@ def data_processing(
     all_estrus_time_and_earCode = zip(estrus_time, estrus_ear_tag_codes)
     for row in all_estrus_time_and_earCode:
         # 发情时间段
-        estrus_end_time = pd.to_datetime(row[0].split(sep="~")[-1])
+        estrus_end_time = pd.to_datetime(row[0].split(sep="~")[-1]) - pd.Timedelta(
+            hours=1
+        )
         estrus_start_time = estrus_end_time - pd.Timedelta(
-            hours=SLIDING_WINDOW_SIZE + 1
+            hours=SLIDING_WINDOW_SIZE - 1
         )
         # 根据耳号和发情时间段设置标签为1
         for code in row[1]:
             code_str = str(code)
             condition = (
                 (setLabels_dataset["sSowsNo"] == code_str)
-                & (setLabels_dataset["tLastUploadTime"] > estrus_start_time)
-                & (setLabels_dataset["tLastUploadTime"] < estrus_end_time)
+                & (setLabels_dataset["tLastUploadTime"] >= estrus_start_time)
+                & (setLabels_dataset["tLastUploadTime"] <= estrus_end_time)
             )
             setLabels_dataset.loc[condition, "isEstrus"] = 1
     setLabels_dataset.dropna(subset=["iTemperature"], inplace=True)
@@ -805,12 +816,137 @@ def prepare_univariate_lstm_data(data: pd.DataFrame, scaler=None):
         labels = group["isEstrus"].values
 
         if len(vals) >= WINDOW_SIZE:
-            for start in range(len(vals) - WINDOW_SIZE + 1):
+            for start in range(0, len(vals) - WINDOW_SIZE + 1, 1):
                 X_list.append(vals[start : start + WINDOW_SIZE])
                 y_list.append(labels[start + WINDOW_SIZE - 1])
 
     X = np.array(X_list)
-    y = np.expand_dims(X, axis=-1)
+    X = np.expand_dims(X, axis=-1)
     y = np.array(y_list)
 
     return X, y, scaler
+
+
+# 绘制训练历史的函数，单独保存每个指标的图
+def plot_training_history(history, save_path=None):
+    if not os.path.exists(save_path):
+        os.makedirs(save_path)
+
+    epochs = range(1, len(history["train_loss"]) + 1)
+    plt.style.use("seaborn-v0_8-whitegrid")
+
+    plot_configs = [
+        (
+            "loss",
+            ["train_loss", "val_loss"],
+            ["b", "r"],
+            "Training and Validation Loss",
+        ),
+        ("accuracy", ["val_accuracy"], ["g"], "Validation Accuracy"),
+        ("precision", ["val_precision"], ["c"], "Validation Precision"),
+        ("recall", ["val_recall"], ["y"], "Validation Recall"),
+        ("f1_score", ["val_f1"], ["m"], "Validation F1 Score"),
+        ("auc", ["val_auc"], ["k"], "Validation AUC"),
+    ]
+
+    for filename, keys, colors, title in plot_configs:
+        plt.figure(figsize=(8, 5))
+
+        for key, color in zip(keys, colors):
+            # 兼容处理：如果 history 中没有该 key 则跳过
+            if key in history:
+                label = "Train" if "train" in key else "Val"
+                plt.plot(
+                    epochs,
+                    history[key],
+                    color=color,
+                    label=label if len(keys) > 1 else None,
+                )
+
+        plt.title(title, fontsize=14)
+        plt.xlabel("Epochs")
+        plt.ylabel("Value")
+        if len(keys) > 1:
+            plt.legend()
+        plt.grid(True)
+
+        # 保存图片
+        file_save_path = os.path.join(save_path, f"val_{filename}.png")
+        plt.savefig(file_save_path, dpi=330, bbox_inches="tight")
+        plt.close()  # 必须关闭，否则多图运行时会占用大量内存
+        print(f"已保存: {file_save_path}")
+
+    print("--- 所有指标图表已单独保存完成 ---")
+
+
+# 绘制混淆矩阵热力图和测试集预测柱状图
+def plot_matrix(y_true, y_pred, save_dir=None):
+    cm = confusion_matrix(y_true, y_pred)
+    plt.figure(figsize=(8, 6))
+
+    # 使用百分比和原始数值同时展示
+    sns.heatmap(
+        cm,
+        annot=True,
+        fmt="d",
+        cmap="Blues",
+        xticklabels=["Not Estrus (0)", "Estrus (1)"],
+        yticklabels=["Not Estrus (0)", "Estrus (1)"],
+    )
+
+    plt.xlabel("Predicted Label")
+    plt.ylabel("True Label")
+    plt.title("Confusion Matrix")
+
+    save_count = 0
+    if save_dir:
+        conf_matrix_path = os.path.join(save_dir, "pictures", "confusion_matrix.png")
+        plt.savefig(conf_matrix_path, dpi=330, bbox_inches="tight")
+        save_count += 1
+    plt.close()
+
+    """
+        绘制测试结果的其他指标 -- 柱状图, 保留两位小数
+    """
+    accuracy = accuracy_score(y_true, y_pred) * 100
+    precision = precision_score(y_true, y_pred) * 100
+    recall = recall_score(y_true, y_pred) * 100
+    f1 = f1_score(y_true, y_pred) * 100
+    auc = roc_auc_score(y_true, y_pred) * 100
+
+    metrics_name = ["Accuracy", "Precision", "Recall", "F1 Score", "AUC"]
+    metrics_values = [accuracy, precision, recall, f1, auc]
+    plt.figure(figsize=(10, 6))
+    bars = plt.bar(
+        metrics_name,
+        metrics_values,
+        color=["#3498db", "#e74c3c", "#2ecc71", "#f1c40f", "#9b59b6"],
+    )
+
+    for bar in bars:
+        height = bar.get_height()
+        plt.text(
+            bar.get_x() + bar.get_width() / 2.0,
+            height + 1,
+            f"{height:.2f}%",
+            ha="center",
+            va="bottom",
+            fontsize=12,
+        )
+    plt.ylim(0, 110)
+    plt.ylabel("Values (%)")
+    plt.title("")
+    plt.grid(axis="y", linestyle="--", alpha=0.7)
+    if save_dir:
+        metrics_path = os.path.join(save_dir, "pictures", "test_metrics.png")
+        plt.savefig(metrics_path, dpi=330, bbox_inches="tight")
+        save_count += 1
+    plt.close()
+
+    if save_count >= 2:
+        print(f"保存至: {os.path.join(save_dir, 'pictures')}")
+    # 额外打印详细数值供分析
+    tn, fp, fn, tp = cm.ravel()
+    print(f"\n--- 混淆矩阵详细分析 ---")
+    print(f"真负类 (TN): {tn} | 伪正类 (FP): {fp} (误报)")
+    print(f"伪负类 (FN): {fn} (漏报) | 真正类 (TP): {tp}")

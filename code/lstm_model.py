@@ -1,3 +1,4 @@
+import numpy as np
 import torch
 import torch.nn as nn
 
@@ -22,9 +23,9 @@ class EstrusLSTM(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         # 全连接层，进行分类映射
-        self.fc1 = nn.Linear(hidden_size, 32)
+        self.fc1 = nn.Linear(hidden_size, 8)
         self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(32, 1)
+        self.fc2 = nn.Linear(8, 1)
         # Sigmoid激活函数，输出概率值
         self.sigmoid = nn.Sigmoid()
 
@@ -46,3 +47,54 @@ class EstrusLSTM(nn.Module):
         x = self.fc2(x)
 
         return self.sigmoid(x)
+
+
+class EarlyStopping:
+    def __init__(
+        self,
+        patience=7,
+        verbose=False,
+        delta=0,
+        monitor="val_loss",
+        path="best_model.pth",
+    ):
+        """
+        Args:
+            patience (int): 忍受多少个 epoch 没有进步
+            verbose (bool): 是否打印信息
+            delta (float): 指标改善的最小阈值
+            path (str): 最佳模型保存路径
+            monitor (str): 监控的指标 ('val_loss' 或 'val_f1')
+        """
+        self.patience = patience
+        self.verbose = verbose
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        self.val_loss_min = np.inf
+        self.delta = delta
+        self.monitor = monitor
+        self.path = path
+
+    def __call__(self, current_metric, model):
+        score = -current_metric if self.monitor == "val_loss" else current_metric
+
+        if self.best_score is None:
+            self.best_score = score
+            self.save_checkpoint(current_metric, model)
+        elif score < self.best_score + self.delta:
+            self.counter += 1
+            if self.verbose:
+                print(f"EarlyStopping counter: {self.counter} out of {self.patience}")
+            if self.counter >= self.patience:
+                self.early_stop = True
+        else:
+            self.best_score = score
+            self.save_checkpoint(current_metric, model)
+            self.counter = 0
+
+    def save_checkpoint(self, current_metric, model):
+        if self.verbose:
+            print(f"Saving checkpoint to {self.path}")
+        torch.save(model.state_dict(), self.path)
+        self.val_loss_min = current_metric

@@ -1,5 +1,6 @@
 __pycache__/
-*.pyc
 temp_test_data/
+result/
+*.pyc
 *.ipynb
 *.zip
