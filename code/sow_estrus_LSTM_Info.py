@@ -1,6 +1,6 @@
 WINDOW_SIZE = 48  # 获取截止发情时刻的数据时间长度
-SLIDING_WINDOW_SIZE = 2  # 发情时刻起向后滑动的窗口大小
-SAMPLE_COUNT = 8  # 非发情数据生成的随机数个数
+SLIDING_WINDOW_SIZE = 1  # 发情时刻起向后滑动的窗口大小
+SAMPLE_COUNT = 4  # 非发情数据生成的随机数个数
 
 # 数据集列名
 columns_name = [
@@ -36,6 +36,8 @@ result_save_path = (
     "D:\\_Software_Projects\\VSCode\\scientific_research\\sow_estrus\\my_code\\result\\"
 )
 
+# 实验使用的最终数据及实验结果
+FINAL_SAVE_PATH = "D:\\_Software_Projects\\VSCode\\scientific_research\\sow_estrus\\my_code\\experimentRecord"
 
 max_rows = 1048575  # 单表最大行数
 

@@ -4,7 +4,7 @@ import torch.nn as nn
 
 
 class EstrusLSTM(nn.Module):
-    def __init__(self, input_size=1, hidden_size=64, num_layers=1, dropout=0.2):
+    def __init__(self, input_size=1, hidden_size=64, num_layers=2, dropout=0.2):
         super(EstrusLSTM, self).__init__()
 
         # LSTM核心层
@@ -14,6 +14,7 @@ class EstrusLSTM(nn.Module):
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
+            dropout=dropout if num_layers > 1 else 0,
         )
 
         # 批归一化层，稳定梯度
@@ -23,9 +24,9 @@ class EstrusLSTM(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
         # 全连接层，进行分类映射
-        self.fc1 = nn.Linear(hidden_size, 8)
+        self.fc1 = nn.Linear(hidden_size, 16)
         self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(8, 1)
+        self.fc2 = nn.Linear(16, 1)
         # Sigmoid激活函数，输出概率值
         self.sigmoid = nn.Sigmoid()
 
@@ -37,10 +38,10 @@ class EstrusLSTM(nn.Module):
 
         # 只取序列中最后一个时间步的特征进行分类
         # out[:, -1, :] 形状为 (batch, hidden_size)
-        x = out[:, -1, :]
+        feature = out[:, -1, :]
 
         # 进入全连接网络
-        x = self.bn(x)
+        x = self.bn(feature)
         x = self.dropout(x)
         x = self.fc1(x)
         x = self.relu(x)

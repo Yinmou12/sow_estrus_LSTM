@@ -136,9 +136,9 @@ def estrusSows_data_choice(
         AorM = info.split(sep="_")[1]
         time = None
         if AorM == "A":
-            time = pd.to_datetime("14:00:00")
+            time = pd.to_datetime("15:00:00")
         elif AorM == "M":
-            time = pd.to_datetime("07:00:00")
+            time = pd.to_datetime("08:00:00")
 
         # 时间段
         prev_time = 0
@@ -146,7 +146,8 @@ def estrusSows_data_choice(
         if time != None:
             date_time = pd.to_datetime(f"{date.date()} {time.time()}")
             prev_time = date_time - pd.Timedelta(hours=WINDOW_SIZE - 1)
-            last_time = date_time + pd.Timedelta(hours=SLIDING_WINDOW_SIZE)
+            # last_time = date_time + pd.Timedelta(hours=SLIDING_WINDOW_SIZE)
+            last_time = date_time + pd.Timedelta(hours=1)
 
             # 提取发情母猪数据
             for code in estrus_ear_tag_codes:
@@ -379,9 +380,9 @@ def data_processing(
 
         time = None
         if AorM == "A":
-            time = pd.to_datetime("14:00:00")
+            time = pd.to_datetime("15:00:00")
         elif AorM == "M":
-            time = pd.to_datetime("07:00:00")
+            time = pd.to_datetime("08:00:00")
 
         # 耳号
         str_ear_tag_codes = info.split(sep="_")[-1]
@@ -390,7 +391,8 @@ def data_processing(
         if time != None:
             date_time = pd.to_datetime(f"{date.date()} {time.time()}")
             prev_time = date_time - pd.Timedelta(hours=WINDOW_SIZE - 1)
-            last_time = date_time + pd.Timedelta(hours=SLIDING_WINDOW_SIZE)
+            # last_time = date_time + pd.Timedelta(hours=SLIDING_WINDOW_SIZE)
+            last_time = date_time
             all_estrus_time.append(str(prev_time) + "~" + str(last_time))
 
             temp_list = []
@@ -439,7 +441,7 @@ def data_processing(
     all_estrus_time_and_earCode = zip(estrus_time, estrus_ear_tag_codes)
     for row in all_estrus_time_and_earCode:
         # 发情时间段
-        estrus_end_time = pd.to_datetime(row[0].split(sep="~")[-1]) - pd.Timedelta(
+        """estrus_end_time = pd.to_datetime(row[0].split(sep="~")[-1]) - pd.Timedelta(
             hours=1
         )
         estrus_start_time = estrus_end_time - pd.Timedelta(
@@ -452,6 +454,14 @@ def data_processing(
                 (setLabels_dataset["sSowsNo"] == code_str)
                 & (setLabels_dataset["tLastUploadTime"] >= estrus_start_time)
                 & (setLabels_dataset["tLastUploadTime"] <= estrus_end_time)
+            )
+            setLabels_dataset.loc[condition, "isEstrus"] = 1"""
+
+        estrus_end_time = pd.to_datetime(row[0].split(sep="~")[-1])
+        for code in row[1]:
+            code_str = str(code)
+            condition = (setLabels_dataset["sSowsNo"] == code_str) & (
+                setLabels_dataset["tLastUploadTime"] == estrus_end_time
             )
             setLabels_dataset.loc[condition, "isEstrus"] = 1
     setLabels_dataset.dropna(subset=["iTemperature"], inplace=True)
@@ -550,7 +560,55 @@ def update_estrus_earCode(data: pd.DataFrame):
     return estrus_earCode
 
 
-#
+# 分层分组划分数据集，确保同一母猪的数据不会同时出现在训练集、验证集和测试集中
+def stratified_group_split(df, train_ratio=0.7, val_ratio=0.1, test_ratio=0.2):
+    estrus_sows = df[df["isEstrus"] == 1]["sSowsNo"].unique()
+    all_rows = df["sSowsNo"].unique()
+    not_estrus_sows = np.array([sow for sow in all_rows if sow not in estrus_sows])
+
+    # 对发情组进行划分
+    e_train, e_temp = train_test_split(
+        estrus_sows, test_size=1 - train_ratio, random_state=123
+    )
+    # 计算验证集和测试集的相对比例
+    val_size_relative = val_ratio / (val_ratio + test_ratio)
+    e_val, e_test = train_test_split(
+        e_temp, test_size=1 - val_size_relative, random_state=123
+    )
+
+    # 对非发情组进行划分
+    n_train, n_temp = train_test_split(
+        not_estrus_sows, test_size=1 - train_ratio, random_state=123
+    )
+    n_val, n_test = train_test_split(
+        n_temp, test_size=1 - val_size_relative, random_state=123
+    )
+
+    # 合并列表
+    final_train_ids = np.concatenate([e_train, n_train])
+    final_val_ids = np.concatenate([e_val, n_val])
+    final_test_ids = np.concatenate([e_test, n_test])
+
+    # 根据划分的ID创建训练集、验证集和测试集
+    train_df = df[df["sSowsNo"].isin(final_train_ids)].copy()
+    val_df = df[df["sSowsNo"].isin(final_val_ids)].copy()
+    test_df = df[df["sSowsNo"].isin(final_test_ids)].copy()
+
+    print(f"------ 划分结果 ------")
+    print(
+        f"训练集：猪只总数 {len(final_train_ids)},其中发情猪 {len(e_train)},非发情猪 {len(n_train)}"
+    )
+    print(
+        f"验证集：猪只总数 {len(final_val_ids)},其中发情猪 {len(e_val)},非发情猪 {len(n_val)}"
+    )
+    print(
+        f"测试集：猪只总数 {len(final_test_ids)},其中发情猪 {len(e_test)},非发情猪 {len(n_test)}"
+    )
+
+    return train_df, val_df, test_df
+
+
+# 填补
 def function_filled(data: pd.DataFrame):
     if data.empty:
         return data
@@ -595,7 +653,7 @@ def function_filled(data: pd.DataFrame):
 
 
 # 数据填补
-def fill_data(
+"""def fill_data(
     data: pd.DataFrame,
 ):
     final_dataset = pd.DataFrame()
@@ -713,7 +771,88 @@ def fill_data(
     final_dataset = pd.concat(
         [final_dataset, notEstrus_dataset], axis=0, ignore_index=True
     ).sort_values(by=["sSowsNo", "tLastUploadTime"])
-    return final_dataset, drop_estrus_earCode, drop_notEStrus_earCode
+    return final_dataset, drop_estrus_earCode, drop_notEStrus_earCode"""
+
+
+def fill_data(data: pd.DataFrame, balanced_data=True, stride=12):
+    final_dataset = pd.DataFrame()
+
+    estrus_sows = data[data["isEstrus"] == 1]["sSowsNo"].unique()
+    all_rows = data["sSowsNo"].unique()
+    not_estrus_sows = np.array([sow for sow in all_rows if sow not in estrus_sows])
+
+    estrus_dataset = pd.DataFrame()
+    notEstrus_dataset = pd.DataFrame()
+    for earCode in estrus_sows:
+        sub_df = data[data["sSowsNo"] == earCode].sort_values("tLastUploadTime")
+        if len(sub_df) >= 44:
+            filled_df = function_filled(sub_df)
+            estrus_dataset = pd.concat(
+                [estrus_dataset, filled_df], axis=0, ignore_index=True
+            )
+
+    # 发情母猪个数与非发情母猪个数的比例
+    ratio = max(1, int(len(estrus_sows) / len(not_estrus_sows)))
+    for earCode in not_estrus_sows:
+        sub_df = data[data["sSowsNo"] == earCode].sort_values("tLastUploadTime")
+        total_len = len(sub_df)
+
+        if total_len < WINDOW_SIZE:
+            continue
+
+        # 平衡数据
+        if balanced_data:
+            sample_count = 0
+            for start_idx in range(0, total_len - WINDOW_SIZE + 1, stride):
+                if sample_count >= ratio:
+                    continue
+
+                window_df = sub_df.iloc[start_idx : start_idx + WINDOW_SIZE].copy()
+                sprev_time = window_df["tLastUploadTime"].min()
+                last_time = window_df["tLastUploadTime"].max()
+                actual_span_hours = (last_time - sprev_time).total_seconds() / 3600
+                missing_hours = actual_span_hours - (WINDOW_SIZE - 1)
+                if missing_hours < 5:
+                    filled_df = function_filled(window_df)
+                    filled_df["sSowsNo"] = f"{earCode}_neg_{sample_count}"
+                    notEstrus_dataset = pd.concat(
+                        [notEstrus_dataset, filled_df], axis=0, ignore_index=True
+                    )
+                    sample_count += 1
+        else:
+            # 每头非发情母猪随机取48小时数据即可
+            attempts = 0
+            while attempts < 5:
+                start_idx = random.randint(0, total_len - WINDOW_SIZE)
+                window_df = sub_df.iloc[start_idx : start_idx + WINDOW_SIZE].copy()
+
+                span = (
+                    window_df["tLastUploadTime"].max()
+                    - window_df["tLastUploadTime"].min()
+                ).total_seconds() / 3600
+                if (span - (WINDOW_SIZE - 1)) < 5:
+                    filled_df = function_filled(window_df)
+                    notEstrus_dataset = pd.concat(
+                        [notEstrus_dataset, filled_df], axis=0, ignore_index=True
+                    )
+                    break
+                attempts += 1
+    final_dataset = pd.concat(
+        [estrus_dataset, notEstrus_dataset], axis=0, ignore_index=True
+    ).sort_values(by=["sSowsNo", "tLastUploadTime"])
+
+    final_all_sows = final_dataset["sSowsNo"].unique()
+    final_estrus_sows = final_dataset[final_dataset["isEstrus"] == 1][
+        "sSowsNo"
+    ].unique()
+    finbal_notEstrus_sows = np.array(
+        [sow for sow in final_all_sows if sow not in final_estrus_sows]
+    )
+    print("-" * 30)
+    print(
+        f"总数 {len(final_all_sows)},其中发情猪 {len(final_estrus_sows)},非发情猪 {len(finbal_notEstrus_sows)}"
+    )
+    return final_dataset
 
 
 # 特征构建
@@ -748,61 +887,12 @@ def feature_construction(
     return result_df
 
 
-# 分层分组划分数据集，确保同一母猪的数据不会同时出现在训练集、验证集和测试集中
-def stratified_group_split(df, train_ratio=0.7, val_ratio=0.1, test_ratio=0.2):
-    estrus_sows = df[df["isEstrus"] == 1]["sSowsNo"].unique()
-    all_rows = df["sSowsNo"].unique()
-    not_estrus_sows = np.array([sow for sow in all_rows if sow not in estrus_sows])
-
-    # 对发情组进行划分
-    e_train, e_temp = train_test_split(
-        estrus_sows, test_size=1 - train_ratio, random_state=123
-    )
-    # 计算验证集和测试集的相对比例
-    val_size_relative = val_ratio / (val_ratio + test_ratio)
-    e_val, e_test = train_test_split(
-        e_temp, test_size=1 - val_size_relative, random_state=123
-    )
-
-    # 对非发情组进行划分
-    n_train, n_temp = train_test_split(
-        not_estrus_sows, test_size=1 - train_ratio, random_state=123
-    )
-    n_val, n_test = train_test_split(
-        n_temp, test_size=1 - val_size_relative, random_state=123
-    )
-
-    # 合并列表
-    final_train_ids = np.concatenate([e_train, n_train])
-    final_val_ids = np.concatenate([e_val, n_val])
-    final_test_ids = np.concatenate([e_test, n_test])
-
-    # 根据划分的ID创建训练集、验证集和测试集
-    train_df = df[df["sSowsNo"].isin(final_train_ids)].copy()
-    val_df = df[df["sSowsNo"].isin(final_val_ids)].copy()
-    test_df = df[df["sSowsNo"].isin(final_test_ids)].copy()
-
-    print(f"------ 划分结果 ------")
-    print(
-        f"训练集：猪只总数 {len(final_train_ids)},其中发情猪 {len(e_train)},非发情猪 {len(n_train)}"
-    )
-    print(
-        f"验证集：猪只总数 {len(final_val_ids)},其中发情猪 {len(e_val)},非发情猪 {len(n_val)}"
-    )
-    print(
-        f"测试集：猪只总数 {len(final_test_ids)},其中发情猪 {len(e_test)},非发情猪 {len(n_test)}"
-    )
-
-    return train_df, val_df, test_df
-
-
 # 仅考虑体温特征的单变量LSTM数据准备
 def prepare_univariate_lstm_data(data: pd.DataFrame, scaler=None):
     feature_col = "iTemperature"
-
     df_copy = data.copy()
-    temp_values = df_copy[feature_col].values.reshape(-1, 1)
 
+    temp_values = df_copy[feature_col].values.reshape(-1, 1)
     if scaler is None:
         scaler = StandardScaler()
         df_copy[feature_col] = scaler.fit_transform(temp_values)
@@ -815,10 +905,19 @@ def prepare_univariate_lstm_data(data: pd.DataFrame, scaler=None):
         vals = group[feature_col].values
         labels = group["isEstrus"].values
 
-        if len(vals) >= WINDOW_SIZE:
-            for start in range(0, len(vals) - WINDOW_SIZE + 1, 1):
-                X_list.append(vals[start : start + WINDOW_SIZE])
-                y_list.append(labels[start + WINDOW_SIZE - 1])
+        if len(vals) < WINDOW_SIZE:
+            continue
+
+        if (labels == 1).any():
+            estrus_indices = np.where(labels == 1)[0]
+            for end_idx in estrus_indices:
+                start_idx = end_idx - WINDOW_SIZE + 1
+                if start_idx >= 0:
+                    X_list.append(vals[start_idx : end_idx + 1])
+                    y_list.append(1)
+        else:
+            X_list.append(vals[:WINDOW_SIZE])
+            y_list.append(0)
 
     X = np.array(X_list)
     X = np.expand_dims(X, axis=-1)

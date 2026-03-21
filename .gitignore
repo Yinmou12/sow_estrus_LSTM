@@ -1,5 +1,7 @@
 __pycache__/
 temp_test_data/
+experimentRecord/
+data/
 result/
 *.pyc
 *.ipynb

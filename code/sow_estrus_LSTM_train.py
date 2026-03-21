@@ -69,6 +69,7 @@ def evaluate_model(model, loader, criterion, device, save_path=None):
             all_labels.extend(batch_y.cpu().numpy().flatten())
 
     avg_loss = total_loss / len(loader)
+    
 
     accuracy = accuracy_score(all_labels, all_preds)
     precision = precision_score(all_labels, all_preds)
@@ -94,14 +95,18 @@ def main():
     )
 
     # 分层分组划分数据集，确保同一母猪的数据不会同时出现在训练集、验证集和测试集中
-    train_df, val_df, test_df = myFunction.stratified_group_split(data)
+    train_df_raw, val_df_raw, test_df_raw = myFunction.stratified_group_split(data)
+
+    train_df = myFunction.fill_data(train_df_raw)
+    val_df = myFunction.fill_data(val_df_raw)
+    test_df = myFunction.fill_data(test_df_raw)
 
     # 划分数据集并进行标准化处理，准备输入 LSTM 模型的格式
-    X_train, y_train, train_scaler = myFunction.prepare_univariate_lstm_data(train_df)
+    X_train, y_train, train_scaler = myFunction.prepare_univariate_lstm_data(train_df,stride=1)
     print(f"训练集 X_train 形状: {X_train.shape}, y_train 形状: {y_train.shape}")
-    X_val, y_val, _ = myFunction.prepare_univariate_lstm_data(val_df, train_scaler)
+    X_val, y_val, _ = myFunction.prepare_univariate_lstm_data(val_df, train_scaler,stride=24)
     print(f"验证集 X_val 形状: {X_val.shape}, y_val 形状: {y_val.shape}")
-    X_test, y_test, _ = myFunction.prepare_univariate_lstm_data(test_df, train_scaler)
+    X_test, y_test, _ = myFunction.prepare_univariate_lstm_data(test_df, train_scaler,stride=24)
     print(f"测试集 X_test 形状: {X_test.shape}, y_test 形状: {y_test.shape}")
 
     os.makedirs(save_path, exist_ok=True)
@@ -215,7 +220,7 @@ def main():
             test_preds.extend(preds)
             test_labels.extend(batch_y.cpu().numpy().flatten())
 
-    myFunction.plot(
+    myFunction.plot_matrix(
         test_labels, test_preds, save_dir=save_path
     )
 
