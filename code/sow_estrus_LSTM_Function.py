@@ -999,7 +999,7 @@ def plot_matrix(y_true, y_pred, save_dir=None):
 
     save_count = 0
     if save_dir:
-        conf_matrix_path = os.path.join(save_dir, "pictures", "confusion_matrix.png")
+        conf_matrix_path = os.path.join(save_dir, "confusion_matrix.png")
         plt.savefig(conf_matrix_path, dpi=330, bbox_inches="tight")
         save_count += 1
     plt.close()
@@ -1037,7 +1037,7 @@ def plot_matrix(y_true, y_pred, save_dir=None):
     plt.title("")
     plt.grid(axis="y", linestyle="--", alpha=0.7)
     if save_dir:
-        metrics_path = os.path.join(save_dir, "pictures", "test_metrics.png")
+        metrics_path = os.path.join(save_dir, "test_metrics.png")
         plt.savefig(metrics_path, dpi=330, bbox_inches="tight")
         save_count += 1
     plt.close()

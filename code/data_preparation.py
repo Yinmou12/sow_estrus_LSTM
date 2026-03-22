@@ -1,6 +1,7 @@
 from sow_estrus_LSTM_Info import *
 import sow_estrus_LSTM_Function as myFunction
 
+import joblib
 import os
 import pandas as pd
 from datetime import datetime
@@ -65,6 +66,9 @@ print(f"测试集 X_test 形状: {X_test.shape}, y_test 形状: {y_test.shape}")
 # 保存
 os.makedirs(SAVE_PATH, exist_ok=True)
 print(f"数据将保存到: {SAVE_PATH}")
+
+sacler_path = os.path.join(SAVE_PATH, "train_scaler.joblib")
+joblib.dump(train_scaler, sacler_path)
 
 
 def save_combined_dataset(X, y, name, save_path):
