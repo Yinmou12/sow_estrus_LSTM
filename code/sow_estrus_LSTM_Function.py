@@ -1,4 +1,11 @@
 from sow_estrus_LSTM_Info import *
+from correct_abnormal_temperatures import (
+    correct_abnormal_temperatures_linear,
+    correct_abnormal_temperatures_moving_avg,
+    correct_abnormal_temperatures_spline,
+    correct_abnormal_temperatures_circadian,
+    correct_abnormal_temperatures_ensemble,
+)
 import sow_estrus_LSTM_Function as myFunction
 
 import joblib
@@ -8,6 +15,7 @@ import pandas as pd
 import os as os
 import random
 import seaborn as sns
+from matplotlib.ticker import MaxNLocator
 from sklearn.metrics import (
     confusion_matrix,
     accuracy_score,
@@ -59,55 +67,6 @@ def intercept_data(
     return filtered_data
 
 
-# 异常体温处理
-def correct_abnormal_temperatures_linear(
-    data: pd.DataFrame,  # 数据集
-    threshold: float = 34.0,  # 异常体温阈值
-):
-    tempDataframe = data.copy()
-    ear_tag_codes = tempDataframe.drop_duplicates(subset="sSowsNo", keep="first")[
-        "sSowsNo"
-    ].to_numpy()
-
-    final_data = pd.DataFrame(columns=data.columns)
-    for ear_code in ear_tag_codes:
-        part_data = data[data["sSowsNo"] == ear_code]
-        sow_temperatures = part_data["iTemperature"].to_numpy()
-        prev_valid_index = -1
-        next_valid_index = 0
-
-        for index, temperature in enumerate(sow_temperatures):
-            if temperature <= threshold:
-                # 找到前一个正常体温值的索引
-                while prev_valid_index < index and (
-                    prev_valid_index == -1
-                    or sow_temperatures[prev_valid_index] <= threshold
-                ):
-                    prev_valid_index += 1
-                # 找到下一个正常体温值的索引
-                while next_valid_index < len(sow_temperatures) and (
-                    next_valid_index <= index
-                    or sow_temperatures[next_valid_index] <= threshold
-                ):
-                    next_valid_index += 1
-
-                if prev_valid_index >= 0 and next_valid_index < len(sow_temperatures):
-                    # 线性插值
-                    slope = (
-                        sow_temperatures[next_valid_index]
-                        - sow_temperatures[prev_valid_index]
-                    ) / (next_valid_index - prev_valid_index)
-                    interpolated_value = sow_temperatures[prev_valid_index] + slope * (
-                        index - prev_valid_index
-                    )
-                    sow_temperatures[index] = interpolated_value
-
-        part_data["iTemperature"] = sow_temperatures
-        final_data = pd.concat([final_data, part_data], axis=0, ignore_index=True)
-
-    return final_data
-
-
 # 数据选择
 def estrusSows_data_choice(
     data: pd.DataFrame,
@@ -119,6 +78,7 @@ def estrusSows_data_choice(
 
     # 记录发情母猪数据
     estrusSows_dataset = pd.DataFrame(columns=columns_name)
+    estrusSows_list = []
 
     # 提取信息
     for info in time_choice:
@@ -152,19 +112,15 @@ def estrusSows_data_choice(
             # 提取发情母猪数据
             for code in estrus_ear_tag_codes:
                 code = str(code)
-                estrusSows_dataset = pd.concat(
-                    [
-                        estrusSows_dataset,
-                        intercept_data(
-                            data[data["sSowsNo"] == code], code, prev_time, last_time
-                        ),
-                    ],
-                    axis=0,
-                    ignore_index=True,
+                temp_data = intercept_data(
+                    data[data["sSowsNo"] == code], code, prev_time, last_time
                 )
+                if not temp_data.empty:
+                    estrusSows_list.append(temp_data)
+    estrusSows_dataset = pd.concat(estrusSows_list, axis=0, ignore_index=True)
 
     # 未发情母猪的数据
-    notEstrusSows_dataset = pd.DataFrame(columns=columns_name)
+    """notEstrusSows_dataset = pd.DataFrame(columns=columns_name)
     for code in data["sSowsNo"].drop_duplicates(keep="first").to_numpy():
         if code in all_estrusSows_ear_codes:
             continue
@@ -176,9 +132,11 @@ def estrusSows_data_choice(
                 ],
                 axis=0,
                 ignore_index=True,
-            )
+            )"""
+    not_estrus_mask = ~data["sSowsNo"].isin(all_estrusSows_ear_codes)
+    notEstrusSows_dataset = data[not_estrus_mask].copy()
 
-    final_dataset = pd.DataFrame(columns=columns_name)
+    # 合并
     final_dataset = pd.concat(
         [estrusSows_dataset, notEstrusSows_dataset], axis=0, ignore_index=True
     ).sort_values(by=["sSowsNo", "tLastUploadTime"])
@@ -314,7 +272,6 @@ def calculate_temperatureRate(
     start_time: str,  # 起始时间
     end_time: str,  # 结束时间
 ):
-    print(type(data))
     start_time = pd.to_datetime(start_time)
     end_time = pd.to_datetime(end_time)
     # data["tLastUploadTime"] = pd.to_datetime(data["tLastUploadTime"])
@@ -360,7 +317,6 @@ def data_processing(
     record_dataset = source_dataset.copy()
     # record_dataset = record_dataset[record_dataset["iTemperature"] > 25]
     record_dataset["sSowsNo"] = record_dataset["sSowsNo"].astype(str)
-    delCode_dataset = record_dataset.copy()
     # 删除一些异常数据
     if len(del_code) > 0:
         for code in del_code:
@@ -405,14 +361,19 @@ def data_processing(
                 unkonwnTime_ear_tag_codes.append(code)
 
     # -------------------- 异常体温处理 --------------------
+    correct_dataset = pd.DataFrame()
     if correct_temperature:
-        record_dataset = correct_abnormal_temperatures_linear(record_dataset, 34, 5)
-        # record_dataset = correct_abnormal_temperatures_linear(record_dataset, 34)
+        # correct_dataset = correct_abnormal_temperatures_spline(record_dataset, 34, 50)
+        correct_dataset = correct_abnormal_temperatures_moving_avg(
+            record_dataset, 34, 50
+        )
         # print(f"异常体温处理:{type(record_dataset)}")
+    else:
+        correct_dataset = record_dataset.copy()
 
     # -------------------- 数据选择 --------------------
     # 选择发情母猪48小时数据，对非发情母猪数据复制
-    choose_data = estrusSows_data_choice(record_dataset, time_choice)
+    choose_data = estrusSows_data_choice(correct_dataset, time_choice)
     # choose_data.to_excel(test_data_path +"loss_of_time\\choose_data.xlsx",index=False)
 
     # -------------------- 计算小时数据 --------------------
@@ -465,10 +426,6 @@ def data_processing(
             )
             setLabels_dataset.loc[condition, "isEstrus"] = 1
     setLabels_dataset.dropna(subset=["iTemperature"], inplace=True)
-
-    # 由于一些数据中可能不存在有2*count个正常体温值，故在此直接舍弃一些数据
-    # if correct_temperature:
-    # setLabels_dataset = setLabels_dataset[setLabels_dataset["iTemperature"] >= 34]
 
     return setLabels_dataset
 
@@ -652,128 +609,6 @@ def function_filled(data: pd.DataFrame):
     return record_dataset
 
 
-# 数据填补
-"""def fill_data(
-    data: pd.DataFrame,
-):
-    final_dataset = pd.DataFrame()
-    # 发情耳标编号对应的发情标签个数 -- 只记录个数少于 SLIDING_WINDOW_SIZE 且标签对应的数据更新时间是连续的
-    earCode_estrusCount = {}
-    # 丢弃的发情母猪的耳标号
-    drop_estrus_earCode = {}
-    # 丢弃的非发情母猪的耳标号
-    drop_notEStrus_earCode = {}
-
-    # 发情和非发情数据存放
-    estrus_dataset = pd.DataFrame()
-    notEstrus_dataset = pd.DataFrame()
-
-    # 确保耳标编号为 str 类型
-    data["sSowsNo"] = data["sSowsNo"].astype(str)
-    record_dataset = data.copy()
-    original_columns = data.columns.tolist()
-
-    # 获取发情和非发情母猪的耳标编号
-    estrus_df = record_dataset[record_dataset["isEstrus"] == 1]
-    estrus_earCodes = estrus_df["sSowsNo"].drop_duplicates(keep="first").tolist()
-    all_earCodes = record_dataset["sSowsNo"].drop_duplicates(keep="first").tolist()
-    notEstrus_earCodes = [
-        earCode for earCode in all_earCodes if earCode not in estrus_earCodes
-    ]
-
-    # 发情母猪的数据处理
-    for earCode in estrus_earCodes:
-        # 获取耳标编号对应的数据
-        sub_df = record_dataset[record_dataset["sSowsNo"] == earCode].sort_values(
-            "tLastUploadTime"
-        )
-        estrus_rows = sub_df[sub_df["isEstrus"] == 1]
-
-        isContinuous = True
-        if len(estrus_rows) <= 1:
-            isContinuous = True
-        else:
-            # 计算相邻时间差
-            time_diffs = estrus_rows["tLastUploadTime"].diff().dropna()
-            # 判断是否所有间隔都等于 1 小时
-            expected_interval = pd.Timedelta(hours=1)
-            isContinuous = (time_diffs == expected_interval).all()
-
-        estrusLabelCount = len(estrus_rows)
-        if estrusLabelCount < SLIDING_WINDOW_SIZE and isContinuous == True:
-            earCode_estrusCount[earCode] = estrusLabelCount
-        elif isContinuous == False:
-            # 发情时间不连续不做填补直接丢弃
-            drop_estrus_earCode[earCode] = "Estrus time not continuous"
-            continue
-
-        # 发情时间连续则对发情前的数据进行填补
-        beforeEstrus_rows = sub_df[sub_df["isEstrus"] == 0].sort_values(
-            "tLastUploadTime"
-        )
-        beforeEstrusLabelCount = len(beforeEstrus_rows)
-        if beforeEstrusLabelCount >= 43:
-            beforeEstrus_dataset = function_filled(beforeEstrus_rows)
-            temp_df = pd.concat(
-                [beforeEstrus_dataset, estrus_rows], axis=0, ignore_index=True
-            )
-            estrus_dataset = pd.concat(
-                [estrus_dataset, temp_df], axis=0, ignore_index=True
-            )
-        else:
-            drop_estrus_earCode[earCode] = "Insufficient pre-estrus data"
-            continue
-
-    final_dataset = pd.concat(
-        [final_dataset, estrus_dataset], axis=0, ignore_index=True
-    )
-    # 非发情母猪的数据处理
-    replace_earCode = []
-    for earCode in notEstrus_earCodes:
-        sub_df = record_dataset[record_dataset["sSowsNo"] == earCode].sort_values(
-            "tLastUploadTime"
-        )
-
-        total_len = len(sub_df)
-        if total_len < WINDOW_SIZE:
-            drop_notEStrus_earCode[earCode] = (
-                f"Data length({total_len}) less than WINDOW_SIZE"
-            )
-            continue
-
-        # 每头母猪生成10随机数根据WINDOW_SIZE(默认48)选择数据判断时间缺失
-        max_start_idx = total_len - WINDOW_SIZE
-        sample_indices = [random.randint(0, max_start_idx) for _ in range(SAMPLE_COUNT)]
-        sample_count_success = 0
-        for i, start_idx in enumerate(sample_indices):
-            # 起始和结束时间
-            start_time = sub_df.iloc[start_idx]["tLastUploadTime"]
-            end_time = start_time + pd.Timedelta(hours=WINDOW_SIZE)
-
-            window_df = sub_df[
-                (sub_df["tLastUploadTime"] >= start_time)
-                & (sub_df["tLastUploadTime"] < end_time)
-            ].copy()
-
-            actual_len = len(window_df)
-            if actual_len >= 44:
-                replace_earCode.append(earCode)
-                window_df["sSowsNo"] = f"{earCode}_neg_{i+1}"
-                notEstrus_dataset = pd.concat(
-                    [notEstrus_dataset, function_filled(window_df)],
-                    axis=0,
-                    ignore_index=True,
-                )
-            else:
-                drop_notEStrus_earCode[earCode] = "Insufficient pre-estrus data"
-                continue
-
-    final_dataset = pd.concat(
-        [final_dataset, notEstrus_dataset], axis=0, ignore_index=True
-    ).sort_values(by=["sSowsNo", "tLastUploadTime"])
-    return final_dataset, drop_estrus_earCode, drop_notEStrus_earCode"""
-
-
 def fill_data(data: pd.DataFrame, balanced_data=True, stride=12):
     final_dataset = pd.DataFrame()
 
@@ -783,6 +618,7 @@ def fill_data(data: pd.DataFrame, balanced_data=True, stride=12):
 
     estrus_dataset = pd.DataFrame()
     notEstrus_dataset = pd.DataFrame()
+
     for earCode in estrus_sows:
         sub_df = data[data["sSowsNo"] == earCode].sort_values("tLastUploadTime")
         if len(sub_df) >= 44:
@@ -792,7 +628,7 @@ def fill_data(data: pd.DataFrame, balanced_data=True, stride=12):
             )
 
     # 发情母猪个数与非发情母猪个数的比例
-    ratio = max(1, int(len(estrus_sows) / len(not_estrus_sows)))
+    ratio = max(1, int(len(estrus_sows) / len(not_estrus_sows)) + 1)
     for earCode in not_estrus_sows:
         sub_df = data[data["sSowsNo"] == earCode].sort_values("tLastUploadTime")
         total_len = len(sub_df)
@@ -887,7 +723,7 @@ def feature_construction(
     return result_df
 
 
-# 仅考虑体温特征的单变量LSTM数据准备
+# 仅考虑温度特征的单变量LSTM数据准备
 def prepare_univariate_lstm_data(data: pd.DataFrame, scaler=None):
     feature_col = "iTemperature"
     df_copy = data.copy()
@@ -926,6 +762,44 @@ def prepare_univariate_lstm_data(data: pd.DataFrame, scaler=None):
     return X, y, scaler
 
 
+# 增加 temperatureRate 特征
+def prepare_lstm_data(data: pd.DataFrame, scaler=None):
+    feature_col = ["iTemperature", "temperatureRate"]
+    df_copy = data.copy()
+
+    temp_values = df_copy[feature_col].values
+    if scaler is None:
+        scaler = StandardScaler()
+        df_copy[feature_col] = scaler.fit_transform(temp_values)
+    else:
+        df_copy[feature_col] = scaler.transform(temp_values)
+
+    X_list, y_list = [], []
+    for earCode, group in df_copy.groupby("sSowsNo"):
+        group = group.sort_values("tLastUploadTime")
+        vals = group[feature_col].values
+        labels = group["isEstrus"].values
+
+        if len(vals) < WINDOW_SIZE:
+            continue
+
+        if (labels == 1).any():
+            estrus_indices = np.where(labels == 1)[0]
+            for end_idx in estrus_indices:
+                start_idx = end_idx - WINDOW_SIZE + 1
+                if start_idx >= 0:
+                    X_list.append(vals[start_idx : end_idx + 1])
+                    y_list.append(1)
+        else:
+            X_list.append(vals[:WINDOW_SIZE])
+            y_list.append(0)
+
+    X = np.array(X_list)
+    y = np.array(y_list)
+
+    return X, y, scaler
+
+
 # 绘制训练历史的函数，单独保存每个指标的图
 def plot_training_history(history, save_path=None):
     if not os.path.exists(save_path):
@@ -950,6 +824,7 @@ def plot_training_history(history, save_path=None):
 
     for filename, keys, colors, title in plot_configs:
         plt.figure(figsize=(8, 5))
+        ax = plt.gca()
 
         for key, color in zip(keys, colors):
             # 兼容处理：如果 history 中没有该 key 则跳过
@@ -961,7 +836,8 @@ def plot_training_history(history, save_path=None):
                     color=color,
                     label=label if len(keys) > 1 else None,
                 )
-
+        # 强制横坐标显示为整数
+        ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
         plt.title(title, fontsize=14)
         plt.xlabel("Epochs")
         plt.ylabel("Value")

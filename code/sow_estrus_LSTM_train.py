@@ -5,11 +5,11 @@
 # git push origin main
 
 from sow_estrus_LSTM_Info import *
-from data_preparation import VERSION
-from lstm_model import EstrusLSTM, EarlyStopping
+from lstm_model import EstrusLSTM, EstrusLSTM_Attn, EstrusGRU, EarlyStopping
 import sow_estrus_LSTM_Function as myFunction
 
 import joblib
+import json
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -77,20 +77,29 @@ def evaluate_model(model, loader, criterion, device):
     f1 = f1_score(all_labels, all_preds)
     roc_auc = roc_auc_score(all_labels, all_raw_probs)
 
-    return avg_loss, accuracy, precision, recall, f1, roc_auc
+    return avg_loss, accuracy, precision, recall, f1, roc_auc, all_preds, all_labels
 
 
-def load_combined_dataset(file_name):
+def load_combined_dataset(file_name, num_features=2):
     df = pd.read_excel(file_name, index_col=False)
     y = df["label_isEstrus"].values
 
     X_raw = df.drop(columns=["label_isEstrus"]).values
-    X_3d = np.expand_dims(X_raw, axis=-1)
+
+    # X_3d = np.expand_dims(X_raw, axis=-1)
+    seq_len = X_raw.shape[1] // num_features
+    X_3d = X_raw.reshape(-1, seq_len, num_features)
+
     return X_3d, y
 
 
 # 修改第二个参数以获取存放路径
-saved_file_path = os.path.join(FINAL_SAVE_PATH, "test_20260322_1019")
+saved_file_path = os.path.join(
+    FINAL_SAVE_PATH, "DATA_NotCor_SplitRatio712_2026_0406_1147"
+)
+layer_hidden_size = 64
+
+VERSION = "BiLSTM"
 
 
 def main():
@@ -99,27 +108,29 @@ def main():
         os.path.join(saved_file_path, "train.xlsx")
     )
     X_val, y_val = load_combined_dataset(os.path.join(saved_file_path, "val.xlsx"))
-    X_test, y_test = load_combined_dataset(os.path.join(saved_file_path, "test.xlsx"))
 
     print(f"X_train 原始形状: {X_train.shape}")
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M")
-    saved_result_path = os.path.join(result_save_path, f"{VERSION}_{timestamp}")
+    # 结果保存
+    timestamp = datetime.now().strftime("%Y_%m%d_%H%M")
+    saved_result_path = os.path.join(
+        result_save_path, f"LSTM", f"{VERSION}_{timestamp}"
+    )
     os.makedirs(saved_result_path, exist_ok=True)
-    info_log_path = os.path.join(saved_result_path, "data_source_info.txt")
-    with open(info_log_path, "w", encoding="utf-8") as f:
-        f.write("-" * 30 + " 实验数据配置记录 " + "-" * 30 + "\n")
-        f.write(f"记录生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"实验版本 (VERSION): {VERSION}\n")
-        f.write(f"数据读取路径 (saved_file_path): {saved_file_path}\n")
-        f.write("-" * 75 + "\n")
 
-    print(f"数据来源记录已保存至: {info_log_path}")
+    # 模型
+    best_model_path = os.path.join(saved_result_path, "best_model.pth")
+    # 信息保存
+    info_log_path = os.path.join(saved_result_path, "info_log.txt")
+
+    # 验证集历史指标
+    history_json_path = os.path.join(saved_result_path, "val_history.json")
+    history_excel_path = os.path.join(saved_result_path, "val_history.xlsx")
 
     # 初始化模型、损失函数和优化器
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    model = EstrusLSTM(input_size=1, hidden_size=32).to(device)
+    model = EstrusLSTM(input_size=2, hidden_size=layer_hidden_size).to(device)
 
     # 使用二元交叉熵损失函数
     criterion = nn.BCELoss()
@@ -128,8 +139,12 @@ def main():
     pos_weight_val = torch.tensor([num_neg / num_pos]).to(device)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_val)"""
 
-    # 优化器
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    # 优化器 新增权重衰减(L2正则化)
+    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
+    # 新增：学习率调度器(动态调整学习率)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, "min", patience=5, factor=0.5
+    )
 
     # 创建数据集和数据加载器
     batch_size = 32
@@ -138,10 +153,6 @@ def main():
     )
     val_loader = DataLoader(
         EstrusDataset(X_val, y_val),
-        batch_size,
-    )
-    test_loader = DataLoader(
-        EstrusDataset(X_test, y_test),
         batch_size,
     )
 
@@ -158,10 +169,12 @@ def main():
 
     # 训练模型
     num_epochs = 100
+    early_patience = 7
 
-    best_model_path = os.path.join(saved_result_path, "best_model.pth")
-    early_stopping = EarlyStopping(patience=10, verbose=True, path=best_model_path)
-
+    early_stopping = EarlyStopping(
+        patience=early_patience, verbose=True, path=best_model_path
+    )
+    early_stopping_epoch = 0
     for epoch in range(num_epochs):
         model.train()
         train_loss = 0.0
@@ -170,14 +183,16 @@ def main():
 
             optimizer.zero_grad()
             outputs = model(batch_X)
-            # 确保标签形状匹配 (batch, 1)
-            loss = criterion(outputs, batch_y.view(-1, 1))
+            # batch_y 在 Dataset 中已经经历了 unsqueeze(1)，形状就是 (batch, 1)
+            loss = criterion(outputs, batch_y)
             loss.backward()
+            # 梯度裁剪
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             train_loss += loss.item()
 
         # 验证阶段
-        val_loss, val_accuracy, val_precision, val_recall, val_f1, val_auc = (
+        val_loss, val_accuracy, val_precision, val_recall, val_f1, val_auc, _, _ = (
             evaluate_model(model, val_loader, criterion, device)
         )
         # 存放指标记录
@@ -189,28 +204,16 @@ def main():
         history["val_f1"].append(val_f1)
         history["val_auc"].append(val_auc)
 
+        # 学习率调度
+        scheduler.step(val_loss)
+
         # early_stopping会决定是否保存当前 model 至 best_model_path
         early_stopping(val_loss, model)
 
         if early_stopping.early_stop:
             print("Early stopping triggered. Ending training.")
+            early_stopping_epoch = epoch
             break
-
-    # 测试集评估
-    final_model = EstrusLSTM(input_size=1, hidden_size=32).to(device)
-    final_model.load_state_dict(torch.load(best_model_path))
-    _, t_acc, t_precision, t_recall, t_f1, t_auc = evaluate_model(
-        final_model,
-        DataLoader(EstrusDataset(X_test, y_test), batch_size),
-        criterion,
-        device,
-    )
-    print("-" * 30)
-    print(f"测试集准确率 (Accuracy): {t_acc:.4f}")
-    print(f"测试集精确率 (Precision): {t_precision:.4f}")
-    print(f"测试集召回率 (Recall): {t_recall:.4f}")
-    print(f"测试集 F1 分数: {t_f1:.4f}")
-    print(f"测试集 AUC 指标: {t_auc:.4f}")
 
     # 绘图
     saved_pictures_path = os.path.join(saved_result_path, "pictures")
@@ -219,19 +222,33 @@ def main():
     # 绘制训练和验证损失曲线
     myFunction.plot_training_history(history, saved_pictures_path)
 
-    # 混淆矩阵
-    final_model.eval()
-    test_preds = []
-    test_labels = []
-    with torch.no_grad():
-        for batch_X, batch_y in test_loader:
-            batch_X = batch_X.to(device)
-            outputs = final_model(batch_X)
-            preds = (outputs >= 0.5).float().cpu().numpy().flatten()
-            test_preds.extend(preds)
-            test_labels.extend(batch_y.cpu().numpy().flatten())
+    # 信息记录
+    with open(info_log_path, "w", encoding="utf-8") as f:
+        f.write("-" * 45 + " 信息记录 " + "-" * 45 + "\n")
+        f.write("\n")
+        f.write(f"记录生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"实验版本 (VERSION): {VERSION}\n")
+        f.write(f"数据读取路径 (saved_file_path): {saved_file_path}\n")
+        f.write(f"结果保存路径 (saved_result_path): {saved_result_path}\n")
+        f.write("\n")
+        f.write("+" * 45 + "\n")
+        f.write(f"hidden_size: {layer_hidden_size}\t")
+        f.write(f"batch_size: {batch_size}\n")
+        f.write(f"early_patience: {early_patience}\t")
+        f.write(f"early_stopping_epoch: {early_stopping_epoch}\n")
+        f.write(f"dropout_rate=0.5\t")
+        f.write("\n")
+        f.write("+" * 20 + " 其它信息 " + "+" * 20 + "\n")
+        f.write(f"新增温度变化率特征\n")
+    print(f"数据来源记录已保存至: {info_log_path}")
 
-    myFunction.plot_matrix(test_labels, test_preds, save_dir=saved_pictures_path)
+    # 验证集历史指标
+    with open(history_json_path, "w", encoding="utf-8") as f:
+        json.dump(history, f)
+    print(f"验证集历史指标已保存至: {history_json_path}")
+    history_df = pd.DataFrame(history)
+    history_df.to_excel(history_excel_path, index_label="epoch")
+    print(f"验证集历史指标已保存至: {history_excel_path}")
 
 
 if __name__ == "__main__":

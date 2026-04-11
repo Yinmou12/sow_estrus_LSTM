@@ -1,9 +1,10 @@
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
-class EstrusLSTM(nn.Module):
+"""class EstrusLSTM(nn.Module):
     def __init__(self, input_size=1, hidden_size=64, num_layers=2, dropout=0.2):
         super(EstrusLSTM, self).__init__()
 
@@ -18,11 +19,9 @@ class EstrusLSTM(nn.Module):
         )
 
         # 批归一化层，稳定梯度
-        self.bn = nn.BatchNorm1d(hidden_size)
-
+        self.bn = nn.LayerNorm(hidden_size)
         # Dropout层，防止过拟合
         self.dropout = nn.Dropout(dropout)
-
         # 全连接层，进行分类映射
         self.fc1 = nn.Linear(hidden_size, 16)
         self.relu = nn.ReLU()
@@ -47,7 +46,160 @@ class EstrusLSTM(nn.Module):
         x = self.relu(x)
         x = self.fc2(x)
 
-        return self.sigmoid(x)
+        return self.sigmoid(x)"""
+
+
+"""class EstrusLSTM(nn.Module):
+    def __init__(self, input_size=1, hidden_size=128, num_layers=3, dropout=0.2):
+        super(EstrusLSTM, self).__init__()
+
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0,
+        )
+        self.fc1 = nn.Linear(hidden_size, 32)
+        self.fc2 = nn.Linear(32, 1)
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        out, (h_n, c_n) = self.lstm(x)
+        feature = out[:, -1, :]
+        x = self.relu(self.fc1(feature))
+        x = torch.sigmoid(self.fc2(x))
+        return x"""
+
+
+class EstrusLSTM(nn.Module):
+    def __init__(self, input_size=1, hidden_size=128, num_layers=3, dropout_rate=0.2):
+        super(EstrusLSTM, self).__init__()
+
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout_rate if num_layers > 1 else 0,
+            bidirectional=True,  # 双向LSTM
+        )
+        # 双向LSTM的输出维度是 2*hidden_size
+        self.fc1 = nn.Linear(2 * hidden_size, 32)
+        self.fc2 = nn.Linear(32, 1)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout_rate)
+        self.batch_norm = nn.LayerNorm(2 * hidden_size)
+
+    def forward(self, x):
+        out, (h_n, c_n) = self.lstm(x)
+        # 提取最后两层（即第3层的正向和反向）的隐藏状态
+        # h_n[-2,:,:] 是最后一层的正向状态
+        # h_n[-1,:,:] 是最后一层的反向状态
+        feature = torch.cat(
+            (h_n[-2, :, :], h_n[-1, :, :]), dim=1
+        )  # 形状: (batch, 2*hidden_size)
+        out = self.batch_norm(feature)
+        out = self.relu(self.fc1(out))
+        out = self.dropout(out)
+        out = torch.sigmoid(self.fc2(out))
+        return out
+
+
+class Attention(nn.Module):
+    def __init__(self, hidden_size):
+        super(Attention, self).__init__()
+        # 线性层用于计算注意力得分
+        self.attn = nn.Linear(hidden_size, hidden_size)
+        # 上下文变量，用于衡量每个时间步的重要性
+        self.v = nn.Linear(hidden_size, 1, bias=False)
+
+    def forward(self, lstm_output):
+        # lstm_output 形状: (batch, seq_len, hidden_size)
+
+        # 计算能量值 (Energy)
+        energy = torch.tanh(self.attn(lstm_output))
+        # 计算权重得分
+        weights = F.softmax(self.v(energy), dim=1)
+
+        # 计算加权后的上下文向量 (Context Vector)
+        # (batch, seq_len, 1) * (batch, seq_len, hidden_size) -> 并在 seq_len 维度求和
+        context_vector = torch.sum(weights * lstm_output, dim=1)
+        return context_vector, weights
+
+
+class EstrusLSTM_Attn(nn.Module):
+    def __init__(self, input_size=1, hidden_size=128, num_layers=3, dropout_rate=0.2):
+        super(EstrusLSTM_Attn, self).__init__()
+
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout_rate if num_layers > 1 else 0,
+            bidirectional=True,  # 双向LSTM
+        )
+        # 注意力层
+        self.attention = Attention(hidden_size * 2)
+        # 双向LSTM的输出维度是 2*hidden_size
+        self.fc1 = nn.Linear(2 * hidden_size, 32)
+        self.fc2 = nn.Linear(32, 1)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout_rate)
+        self.batch_norm = nn.LayerNorm(2 * hidden_size)
+
+    def forward(self, x):
+        out, (h_n, c_n) = self.lstm(x)
+        # 提取最后两层（即第3层的正向和反向）的隐藏状态
+        # h_n[-2,:,:] 是最后一层的正向状态
+        # h_n[-1,:,:] 是最后一层的反向状态
+        """feature = torch.cat(
+            (h_n[-2, :, :], h_n[-1, :, :]), dim=1
+        )  # 形状: (batch, 2*hidden_size)
+        out = self.batch_norm(feature)"""
+
+        attn_output, attn_weights = self.attention(out)
+        out = self.batch_norm(attn_output)
+        out = self.relu(self.fc1(out))
+        out = self.dropout(out)
+        out = torch.sigmoid(self.fc2(out))
+        return out
+
+
+class EstrusLSTM_MultiHeadAttn(nn.Module):
+    def __init__(
+        self, input_size=2, hidden_size=128, num_layers=2, num_heads=4, dropout_rate=0.2
+    ):
+        super().__init__(EstrusLSTM_MultiHeadAttn, self).__init__()
+
+
+class EstrusGRU(nn.Module):
+    def __init__(self, input_size=1, hidden_size=128, num_layers=3, dropout=0.2):
+        super(EstrusGRU, self).__init__()
+
+        self.gru = nn.GRU(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0,
+            bidirectional=True,
+        )
+        self.fc1 = nn.Linear(hidden_size * 2, 32)
+        self.fc2 = nn.Linear(32, 1)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout)
+        self.batch_norm = nn.LayerNorm(hidden_size * 2)
+
+    def forward(self, x):
+        out, h_n = self.gru(x)
+        feature = torch.cat((h_n[-2, :, :], h_n[-1, :, :]), dim=1)
+        out = self.batch_norm(feature)
+        out = self.relu(self.fc1(out))
+        out = self.dropout(out)
+        out = torch.sigmoid(self.fc2(out))
+        return out
 
 
 class EarlyStopping:
