@@ -655,24 +655,23 @@ def fill_data(data: pd.DataFrame, balanced_data=True, stride=12):
                         [notEstrus_dataset, filled_df], axis=0, ignore_index=True
                     )
                     sample_count += 1
-        else:
-            # 每头非发情母猪随机取48小时数据即可
+        elif balanced_data == False:
+            # 每头非发情母猪取多个数据 -- 每间隔stride时间步取一段数据
             attempts = 0
-            while attempts < 5:
-                start_idx = random.randint(0, total_len - WINDOW_SIZE)
+            for start_idx in range(0, total_len - WINDOW_SIZE + 1, stride):
                 window_df = sub_df.iloc[start_idx : start_idx + WINDOW_SIZE].copy()
-
                 span = (
                     window_df["tLastUploadTime"].max()
                     - window_df["tLastUploadTime"].min()
                 ).total_seconds() / 3600
                 if (span - (WINDOW_SIZE - 1)) < 5:
                     filled_df = function_filled(window_df)
+                    filled_df["sSowsNo"] = f"{earCode}_neg_{attempts}"
                     notEstrus_dataset = pd.concat(
                         [notEstrus_dataset, filled_df], axis=0, ignore_index=True
                     )
-                    break
                 attempts += 1
+
     final_dataset = pd.concat(
         [estrus_dataset, notEstrus_dataset], axis=0, ignore_index=True
     ).sort_values(by=["sSowsNo", "tLastUploadTime"])
@@ -686,41 +685,9 @@ def fill_data(data: pd.DataFrame, balanced_data=True, stride=12):
     )
     print("-" * 30)
     print(
-        f"总数 {len(final_all_sows)},其中发情猪 {len(final_estrus_sows)},非发情猪 {len(finbal_notEstrus_sows)}"
+        f"总数 {len(final_all_sows)},其中发情样本 {len(final_estrus_sows)},非发情样本 {len(finbal_notEstrus_sows)}"
     )
     return final_dataset
-
-
-# 特征构建
-def feature_construction(
-    data: pd.DataFrame,  # 函数data_processing处理之后的数据
-):
-    record_dataset = data.copy()
-    record_dataset = record_dataset.sort_values(by=["sSowsNo", "tLastUploadTime"])
-
-    all_samples = []  # 用于存储构建好的特征行
-    for earCode in record_dataset["sSowsNo"].drop_duplicates(keep="first").tolist():
-        sub_df = record_dataset[record_dataset["sSowsNo"] == earCode]
-        dataLength = len(sub_df)
-        # 体温数据序列
-        temp_series = sub_df["iTemperature"].values
-        if dataLength >= WINDOW_SIZE:
-            label = 1 if "neg" not in str(earCode) else 0
-            # 滑动窗口截取
-            for start in range(dataLength - WINDOW_SIZE + 1):
-                window = temp_series[start : start + WINDOW_SIZE]
-                feature_dict = {f"temp_{i}": window[i] for i in range(WINDOW_SIZE)}
-                feature_dict["sSowsNo"] = earCode
-                feature_dict["isEstrus"] = label
-
-                all_samples.append(feature_dict)
-        elif dataLength < WINDOW_SIZE:
-            continue
-
-    result_df = pd.DataFrame(all_samples)
-    cols = ["sSowsNo", "isEstrus"] + [f"temp_{i}" for i in range(WINDOW_SIZE)]
-    result_df = result_df[cols]
-    return result_df
 
 
 # 仅考虑温度特征的单变量LSTM数据准备
@@ -919,9 +886,17 @@ def plot_matrix(y_true, y_pred, save_dir=None):
     plt.close()
 
     if save_count >= 2:
-        print(f"保存至: {os.path.join(save_dir, 'pictures')}")
+        print(f"保存至: {os.path.join(save_dir)}")
     # 额外打印详细数值供分析
     tn, fp, fn, tp = cm.ravel()
+
+    print("-" * 30)
+    print(f"测试集准确率 (Accuracy): {accuracy:.4f}")
+    print(f"测试集精确率 (Precision): {precision:.4f}")
+    print(f"测试集召回率 (Recall): {recall:.4f}")
+    print(f"测试集 F1 分数: {f1:.4f}")
+    print(f"测试集 AUC 指标: {auc:.4f}")
+
     print(f"\n--- 混淆矩阵详细分析 ---")
     print(f"真负类 (TN): {tn} | 伪正类 (FP): {fp} (误报)")
     print(f"伪负类 (FN): {fn} (漏报) | 真正类 (TP): {tp}")

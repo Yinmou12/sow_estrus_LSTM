@@ -5,7 +5,13 @@
 # git push origin main
 
 from sow_estrus_LSTM_Info import *
-from lstm_model import EstrusLSTM, EstrusLSTM_Attn, EstrusGRU, EarlyStopping
+from lstm_model import (
+    EarlyStopping,
+    EstrusLSTM,
+    EstrusLSTM_Attn,
+    EstrusGRU,
+    EstrusLSTM_MultiHeadAttn,
+)
 import sow_estrus_LSTM_Function as myFunction
 
 import joblib
@@ -95,11 +101,11 @@ def load_combined_dataset(file_name, num_features=2):
 
 # 修改第二个参数以获取存放路径
 saved_file_path = os.path.join(
-    FINAL_SAVE_PATH, "DATA_NotCor_SplitRatio712_2026_0406_1147"
+    info_FINAL_SAVE_PATH, "DATA_NotCor_AddTempRate_2026_0406_1213"
 )
 layer_hidden_size = 64
 
-VERSION = "BiLSTM"
+VERSION_TRAIN = "BiLSTM_MultiHeadAttn"
 
 
 def main():
@@ -108,13 +114,12 @@ def main():
         os.path.join(saved_file_path, "train.xlsx")
     )
     X_val, y_val = load_combined_dataset(os.path.join(saved_file_path, "val.xlsx"))
-
     print(f"X_train 原始形状: {X_train.shape}")
 
     # 结果保存
     timestamp = datetime.now().strftime("%Y_%m%d_%H%M")
     saved_result_path = os.path.join(
-        result_save_path, f"LSTM", f"{VERSION}_{timestamp}"
+        result_save_path, f"LSTM", f"{VERSION_TRAIN}_{timestamp}"
     )
     os.makedirs(saved_result_path, exist_ok=True)
 
@@ -130,7 +135,10 @@ def main():
     # 初始化模型、损失函数和优化器
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    model = EstrusLSTM(input_size=2, hidden_size=layer_hidden_size).to(device)
+    # model = EstrusLSTM(input_size=2, hidden_size=layer_hidden_size).to(device)
+    model = EstrusLSTM_MultiHeadAttn(input_size=2, hidden_size=layer_hidden_size).to(
+        device
+    )
 
     # 使用二元交叉熵损失函数
     criterion = nn.BCELoss()
@@ -146,16 +154,6 @@ def main():
         optimizer, "min", patience=5, factor=0.5
     )
 
-    # 创建数据集和数据加载器
-    batch_size = 32
-    train_loader = DataLoader(
-        EstrusDataset(X_train, y_train), batch_size, shuffle=True, drop_last=True
-    )
-    val_loader = DataLoader(
-        EstrusDataset(X_val, y_val),
-        batch_size,
-    )
-
     # 训练指标记录
     history = {
         "train_loss": [],
@@ -167,7 +165,16 @@ def main():
         "val_auc": [],
     }
 
-    # 训练模型
+    # 创建数据集和数据加载器
+    batch_size = 32
+    train_loader = DataLoader(
+        EstrusDataset(X_train, y_train), batch_size, shuffle=True, drop_last=True
+    )
+    val_loader = DataLoader(
+        EstrusDataset(X_val, y_val),
+        batch_size,
+    )
+
     num_epochs = 100
     early_patience = 7
 
@@ -227,7 +234,7 @@ def main():
         f.write("-" * 45 + " 信息记录 " + "-" * 45 + "\n")
         f.write("\n")
         f.write(f"记录生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"实验版本 (VERSION): {VERSION}\n")
+        f.write(f"实验版本 (VERSION): {VERSION_TRAIN}\n")
         f.write(f"数据读取路径 (saved_file_path): {saved_file_path}\n")
         f.write(f"结果保存路径 (saved_result_path): {saved_result_path}\n")
         f.write("\n")
@@ -240,6 +247,8 @@ def main():
         f.write("\n")
         f.write("+" * 20 + " 其它信息 " + "+" * 20 + "\n")
         f.write(f"新增温度变化率特征\n")
+        f.write(f"新增多头注意力机制\n")
+        # f.write(f"池化层采用torch.max捕捉最显著的温升特征\n")
     print(f"数据来源记录已保存至: {info_log_path}")
 
     # 验证集历史指标

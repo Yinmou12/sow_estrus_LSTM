@@ -37,7 +37,7 @@ result_save_path = (
 )
 
 # 实验使用的最终数据及实验结果
-FINAL_SAVE_PATH = "D:\\_Software_Projects\\VSCode\\scientific_research\\sow_estrus\\my_code\\experimentRecord"
+info_FINAL_SAVE_PATH = "D:\\_Software_Projects\\VSCode\\scientific_research\\sow_estrus\\my_code\\finalUsedData"
 
 max_rows = 1048575  # 单表最大行数
 

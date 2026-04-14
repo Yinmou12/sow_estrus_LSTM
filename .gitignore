@@ -1,8 +1,8 @@
 __pycache__/
-temp_test_data/
-experimentRecord/
 data/
+finalUsedData/
 result/
+temp_test_data/
 *.pyc
 *.ipynb
 *.zip

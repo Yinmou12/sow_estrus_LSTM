@@ -171,7 +171,49 @@ class EstrusLSTM_MultiHeadAttn(nn.Module):
     def __init__(
         self, input_size=2, hidden_size=128, num_layers=2, num_heads=4, dropout_rate=0.2
     ):
-        super().__init__(EstrusLSTM_MultiHeadAttn, self).__init__()
+        super(EstrusLSTM_MultiHeadAttn, self).__init__()
+
+        self.lstm = nn.LSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout_rate if num_layers > 1 else 0,
+            bidirectional=True,  # 双向LSTM
+        )
+
+        # 多头注意力层，embed_dim 为双向LSTM的输出维度 (2 * hidden_size)
+        self.multihead_attn = nn.MultiheadAttention(
+            embed_dim=2 * hidden_size,
+            num_heads=num_heads,
+            dropout=dropout_rate,
+            batch_first=True,  # 确保 batch 在第 0 维
+        )
+
+        self.batch_norm = nn.LayerNorm(2 * hidden_size)
+        self.fc1 = nn.Linear(2 * hidden_size, 32)
+        self.fc2 = nn.Linear(32, 1)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout_rate)
+
+    def forward(self, x):
+        # lstm_out 形状: (batch, seq_len, 2 * hidden_size)
+        lstm_out, (h_n, c_n) = self.lstm(x)
+
+        # 自注意力机制：Query, Key, Value 均使用 lstm_out
+        attn_output, attn_weights = self.multihead_attn(lstm_out, lstm_out, lstm_out)
+
+        # 对序列维度求平均，得到单个上下文向量作为分类特征
+        context_vector = torch.mean(
+            attn_output, dim=1
+        )  # 形状: (batch, 2 * hidden_size)
+
+        out = self.batch_norm(context_vector)
+        out = self.relu(self.fc1(out))
+        out = self.dropout(out)
+        out = torch.sigmoid(self.fc2(out))
+
+        return out
 
 
 class EstrusGRU(nn.Module):

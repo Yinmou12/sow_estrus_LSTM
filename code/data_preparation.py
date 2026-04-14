@@ -8,9 +8,9 @@ from datetime import datetime
 
 pd.set_option("future.no_silent_downcasting", True)
 
-VERSION = "DATA_NotCor_AddTempRate"
+VERSION_DP = "DATA_NotCor_AddTempRate"
 timestamp = datetime.now().strftime("%Y_%m%d_%H%M")
-SAVE_PATH = os.path.join(FINAL_SAVE_PATH, f"{VERSION}_{timestamp}")
+SAVE_PATH_DP = os.path.join(info_FINAL_SAVE_PATH, f"{VERSION_DP}_{timestamp}")
 
 if __name__ == "__main__":
     # 原始数据读取
@@ -72,10 +72,10 @@ if __name__ == "__main__":
     print(f"测试集 X_test 形状: {X_test.shape}, y_test 形状: {y_test.shape}")
 
     # 保存
-    os.makedirs(SAVE_PATH, exist_ok=True)
-    print(f"数据将保存到: {SAVE_PATH}")
+    os.makedirs(SAVE_PATH_DP, exist_ok=True)
+    print(f"数据将保存到: {SAVE_PATH_DP}")
 
-    sacler_path = os.path.join(SAVE_PATH, "train_scaler.joblib")
+    sacler_path = os.path.join(SAVE_PATH_DP, "train_scaler.joblib")
     joblib.dump(train_scaler, sacler_path)
 
     def save_combined_dataset(X, y, name, save_path):
@@ -88,6 +88,6 @@ if __name__ == "__main__":
         full_path = os.path.join(save_path, file_name)
         combined_df.to_excel(full_path, index=False)
 
-    save_combined_dataset(X_train, y_train, "train", SAVE_PATH)
-    save_combined_dataset(X_val, y_val, "val", SAVE_PATH)
-    save_combined_dataset(X_test, y_test, "test", SAVE_PATH)
+    save_combined_dataset(X_train, y_train, "train", SAVE_PATH_DP)
+    save_combined_dataset(X_val, y_val, "val", SAVE_PATH_DP)
+    save_combined_dataset(X_test, y_test, "test", SAVE_PATH_DP)
