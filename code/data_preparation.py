@@ -8,7 +8,7 @@ from datetime import datetime
 
 pd.set_option("future.no_silent_downcasting", True)
 
-VERSION_DP = "DATA_NotCor_AddTempRate"
+VERSION_DP = "DATA_ADASYN"
 timestamp = datetime.now().strftime("%Y_%m%d_%H%M")
 SAVE_PATH_DP = os.path.join(info_FINAL_SAVE_PATH, f"{VERSION_DP}_{timestamp}")
 

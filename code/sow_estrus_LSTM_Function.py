@@ -25,6 +25,7 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 from sklearn.model_selection import train_test_split
+from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 
 
@@ -553,13 +554,13 @@ def stratified_group_split(df, train_ratio=0.7, val_ratio=0.1, test_ratio=0.2):
 
     print(f"------ 划分结果 ------")
     print(
-        f"训练集：猪只总数 {len(final_train_ids)},其中发情猪 {len(e_train)},非发情猪 {len(n_train)}"
+        f"训练集：总数 {len(final_train_ids)},其中发情猪 {len(e_train)},非发情猪 {len(n_train)}"
     )
     print(
-        f"验证集：猪只总数 {len(final_val_ids)},其中发情猪 {len(e_val)},非发情猪 {len(n_val)}"
+        f"验证集：总数 {len(final_val_ids)},其中发情猪 {len(e_val)},非发情猪 {len(n_val)}"
     )
     print(
-        f"测试集：猪只总数 {len(final_test_ids)},其中发情猪 {len(e_test)},非发情猪 {len(n_test)}"
+        f"测试集：总数 {len(final_test_ids)},其中发情猪 {len(e_test)},非发情猪 {len(n_test)}"
     )
 
     return train_df, val_df, test_df
@@ -627,6 +628,7 @@ def fill_data(data: pd.DataFrame, balanced_data=True, stride=12):
                 [estrus_dataset, filled_df], axis=0, ignore_index=True
             )
 
+    skipped_constant_windows = []
     # 发情母猪个数与非发情母猪个数的比例
     ratio = max(1, int(len(estrus_sows) / len(not_estrus_sows)) + 1)
     for earCode in not_estrus_sows:
@@ -644,6 +646,10 @@ def fill_data(data: pd.DataFrame, balanced_data=True, stride=12):
                     continue
 
                 window_df = sub_df.iloc[start_idx : start_idx + WINDOW_SIZE].copy()
+                if window_df["iTemperature"].nunique() == 1:
+                    skipped_constant_windows.append(f"{earCode}_window_at_{start_idx}")
+                    continue
+
                 sprev_time = window_df["tLastUploadTime"].min()
                 last_time = window_df["tLastUploadTime"].max()
                 actual_span_hours = (last_time - sprev_time).total_seconds() / 3600
@@ -660,21 +666,50 @@ def fill_data(data: pd.DataFrame, balanced_data=True, stride=12):
             attempts = 0
             for start_idx in range(0, total_len - WINDOW_SIZE + 1, stride):
                 window_df = sub_df.iloc[start_idx : start_idx + WINDOW_SIZE].copy()
-                span = (
-                    window_df["tLastUploadTime"].max()
-                    - window_df["tLastUploadTime"].min()
-                ).total_seconds() / 3600
-                if (span - (WINDOW_SIZE - 1)) < 5:
-                    filled_df = function_filled(window_df)
-                    filled_df["sSowsNo"] = f"{earCode}_neg_{attempts}"
-                    notEstrus_dataset = pd.concat(
-                        [notEstrus_dataset, filled_df], axis=0, ignore_index=True
-                    )
+                # 判断是否已经全部是同样的耳温值
+                if window_df["iTemperature"].nunique() == 1:
+                    skipped_constant_windows.append(f"{earCode}_neg_{attempts}")
+                else:
+                    span = (
+                        window_df["tLastUploadTime"].max()
+                        - window_df["tLastUploadTime"].min()
+                    ).total_seconds() / 3600
+                    if (span - (WINDOW_SIZE - 1)) < 5:
+                        filled_df = function_filled(window_df)
+                        filled_df["sSowsNo"] = f"{earCode}_neg_{attempts}"
+                        notEstrus_dataset = pd.concat(
+                            [notEstrus_dataset, filled_df], axis=0, ignore_index=True
+                        )
                 attempts += 1
 
     final_dataset = pd.concat(
         [estrus_dataset, notEstrus_dataset], axis=0, ignore_index=True
     ).sort_values(by=["sSowsNo", "tLastUploadTime"])
+
+    if skipped_constant_windows:
+        print("-" * 30)
+        print(
+            f"以下非发情窗口由于耳温值无变化被跳过 (共 {len(skipped_constant_windows)} 个):"
+        )
+        print(skipped_constant_windows)
+
+    discarded_sows = []
+    valid_groups = []
+    for sow_id, group in final_dataset.groupby("sSowsNo"):
+        if group["iTemperature"].nunique() <= 1:
+            discarded_sows.append(sow_id)
+        else:
+            valid_groups.append(group)
+
+    if valid_groups:
+        final_dataset = pd.concat(valid_groups, axis=0, ignore_index=True)
+    else:
+        final_dataset = pd.DataFrame(columns=final_dataset.columns)
+
+    if discarded_sows:
+        print("-" * 30)
+        print(f"以下样本由于48小时耳温完全一致被丢弃 (共 {len(discarded_sows)} 个):")
+        print(discarded_sows)
 
     final_all_sows = final_dataset["sSowsNo"].unique()
     final_estrus_sows = final_dataset[final_dataset["isEstrus"] == 1][
@@ -692,9 +727,22 @@ def fill_data(data: pd.DataFrame, balanced_data=True, stride=12):
 
 # 仅考虑温度特征的单变量LSTM数据准备
 def prepare_univariate_lstm_data(data: pd.DataFrame, scaler=None):
-    feature_col = "iTemperature"
     df_copy = data.copy()
 
+    if len(df_copy.columns) >= WINDOW_SIZE:
+        X_raw = df_copy.iloc[:, 1:-1].values
+        y = df_copy.iloc[:, -1].values
+
+        temp_values = X_raw.reshape(-1, 1)
+        if scaler is None:
+            scaler = StandardScaler()
+            temp_scaled = scaler.fit_transform(temp_values)
+        else:
+            temp_scaled = scaler.transform(temp_values)
+        X = temp_scaled.reshape(-1, WINDOW_SIZE, 1)
+        return X, y, scaler
+
+    feature_col = "iTemperature"
     temp_values = df_copy[feature_col].values.reshape(-1, 1)
     if scaler is None:
         scaler = StandardScaler()
@@ -727,6 +775,36 @@ def prepare_univariate_lstm_data(data: pd.DataFrame, scaler=None):
     y = np.array(y_list)
 
     return X, y, scaler
+
+
+def convert_features(data: pd.DataFrame):
+    df_copy = data.copy()
+    cols = ["sSowsNo"] + [f"feature{i}" for i in range(1, 49)] + ["isEstrus"]
+    rows_list = []
+    drop_list = []
+
+    for earCode, group in df_copy.groupby("sSowsNo"):
+        # 确保每个分组都包含完整的48个时间步长数据
+        if len(group) >= WINDOW_SIZE:
+            # 提取48个iTemperature值
+            vals = group["iTemperature"].values[:WINDOW_SIZE]
+
+            # 如果isEstrus列中存在1，则该样本标签为1，否则为0
+            label = group["isEstrus"].max()
+
+            # 构建新行: [编号, feature_1, ..., feature_48, 标签]
+            new_row = [earCode] + vals.tolist() + [label]
+            rows_list.append(new_row)
+        else:
+            drop_list.append(earCode)
+
+    if drop_list:
+        print("-" * 30)
+        print(f"以下样本由于时间步长不足被丢弃 (共 {len(drop_list)} 个):")
+        print(drop_list)
+
+    final_dataset = pd.DataFrame(rows_list, columns=cols)
+    return final_dataset
 
 
 # 增加 temperatureRate 特征
@@ -900,3 +978,162 @@ def plot_matrix(y_true, y_pred, save_dir=None):
     print(f"\n--- 混淆矩阵详细分析 ---")
     print(f"真负类 (TN): {tn} | 伪正类 (FP): {fp} (误报)")
     print(f"伪负类 (FN): {fn} (漏报) | 真正类 (TP): {tp}")
+
+
+def ADASYN(threshold, gamma, df_min: pd.DataFrame, df_maj: pd.DataFrame, k=7):
+    """
+    threshold: 过采样的阈值
+    gamma: 过采样的强度,通常在0到1之间,值越大表示生成的合成样本越多
+    df_min: 少数类样本
+    df_maj: 多数类样本
+    k: k近邻的数量
+    """
+    d = len(df_min) / len(df_maj)
+    if d >= threshold:
+        return pd.concat([df_min, df_maj], axis=0).reset_index(drop=True)
+
+    # 特征矩阵
+    X_min = df_min.iloc[:, 1:49].values
+    X_maj = df_maj.iloc[:, 1:49].values
+    X_all = np.vstack((X_min, X_maj))
+
+    # 标签数组用于统计近邻类别
+    labels_all = np.array([1] * len(df_min) + [0] * len(df_maj))
+
+    # 合成样本数
+    G = int(gamma * (len(df_maj) - len(df_min)))
+    if G <= 0:
+        return pd.concat([df_min, df_maj], axis=0)
+
+    # 寻找K个近邻并计算权重
+    nn = NearestNeighbors(n_neighbors=k + 1).fit(X_all)
+    _, indices = nn.kneighbors(X_min)
+
+    r = []
+    for i in range(len(df_min)):
+        # 计算近邻中多数类的比例
+        count_maj = np.sum(labels_all[indices[i][1:]] == 0)
+        r.append(count_maj / k)
+
+    r = np.array(r)
+    r_hat = r / r.sum() if r.sum() > 0 else np.ones(len(df_min)) / len(df_min)
+    g = np.round(r_hat * G).astype(int)
+
+    # 生成合成样本
+    X_syn = []
+    nn_min = NearestNeighbors(n_neighbors=min(k + 1, len(df_min))).fit(X_min)
+    _, min_indices = nn_min.kneighbors(X_min)
+
+    for i in range(len(df_min)):
+        for _ in range(g[i]):
+            zi_idx = np.random.choice(min_indices[i][1:])
+            x_zi = X_min[zi_idx]
+
+            # 线性内插
+            lambd = np.random.uniform(0, 1)
+            s_features = X_min[i] + lambd * (x_zi - X_min[i])
+            X_syn.append(s_features)
+
+    # 构造新的DataFrame
+    if len(X_syn) > 0:
+        syn_ids = [f"adasyn_{i}" for i in range(len(X_syn))]
+        syn_labels = [1] * len(X_syn)
+        # (N, 50)的结构
+        syn_data = np.column_stack([syn_ids, X_syn, syn_labels])
+        df_syn = pd.DataFrame(syn_data, columns=df_min.columns)
+        # 合并
+        df_augmented = pd.concat([df_min, df_maj, df_syn], axis=0).reset_index(
+            drop=True
+        )
+        # 确保数据类型
+        df_augmented["sSowsNo"] = df_augmented["sSowsNo"].astype(str)
+        df_augmented["isEstrus"] = df_augmented["isEstrus"].astype(int)
+        return df_augmented
+
+    return pd.concat([df_min, df_maj], axis=0)
+
+
+def SMOTE(df_min: pd.DataFrame, amount_oversampling=400, k=5):
+    """ "
+    df_min: 少数类样本的 DataFrame
+    amount_oversampling: 过采样比例
+    k: K近邻的数量
+    """
+    X_min = df_min.iloc[:, 1:49].values
+    n_samples, n_features = X_min.shape
+
+    # 计算需要生成的合成样本数量
+    N = int(amount_oversampling / 100)
+    if N < 1:
+        # 比例小于 100% ,随机抽样进行 1:1 采样
+        indices = np.random.choice(
+            n_samples, size=int(N * amount_oversampling), replace=False
+        )
+        X_min_subset = X_min[indices]
+        n_samples = len(X_min_subset)
+        N = 1
+    else:
+        X_min_subset = X_min
+
+    nn = NearestNeighbors(n_neighbors=k + 1).fit(X_min)
+    _, indices = nn.kneighbors(X_min_subset)
+
+    X_smote = []
+    for i in range(n_samples):
+        neighbor_indices = indices[i][1:]
+        for _ in range(N):
+            # 随机选择一个近邻 nn_idx
+            nn_idx = np.random.choice(neighbor_indices)
+            diff = X_min[nn_idx] - X_min_subset[i]
+            gap = random.random()
+            s_features = X_min_subset[i] + gap * diff
+            X_smote.append(s_features)
+
+    if len(X_smote) > 0:
+        # 设为 9999 代表合成数据
+        smote_ids = [9999] * len(X_smote)
+        smote_labels = [1] * len(X_smote)
+
+        smote_data = np.column_stack([smote_ids, X_smote, smote_labels])
+        df_smote = pd.DataFrame(smote_data, columns=df_min.columns)
+
+        df_smote["sSowsNo"] = df_smote["sSowsNo"].astype(str)
+        df_smote["isEstrus"] = df_smote["isEstrus"].astype(int)
+        return df_smote
+
+    return pd.DataFrame(columns=df_min.columns)
+
+
+def TomekLinked(data: pd.DataFrame, k):
+    """
+    data: 包含特征和标签的 DataFrame
+    k: 近邻数量
+    """
+    df_min = data[data["isEstrus"] == 1].copy()
+    df_maj = data[data["isEstrus"] == 0].copy()
+
+    X_min = df_min.iloc[:, 1:49].values
+    X_maj = df_maj.iloc[:, 1:49].values
+
+    nn_maj = NearestNeighbors(n_neighbors=k).fit(X_maj)
+    _, min_to_maj_idx = nn_maj.kneighbors(X_min)
+    nn_min = NearestNeighbors(n_neighbors=k).fit(X_min)
+    _, maj_to_min_idx = nn_min.kneighbors(X_maj)
+
+    removed_maj_indices = []
+
+    for i in range(len(df_min)):
+        # j 是少数类样本 i 在多数类中最相似样本的索引
+        j = min_to_maj_idx[i, 0]
+
+        # 如果多数类样本 j 在少数类中最相似的样本正好也是 i
+        # 则 (i, j) 互为对方在异类中的“最相似者”，构成 Tomek Link
+        if maj_to_min_idx[j, 0] == i:
+            removed_maj_indices.append(df_maj.index[j])
+
+    final_df_maj = df_maj.drop(index=list(set(removed_maj_indices)))
+
+    cleaned_data = pd.concat([df_min, final_df_maj], axis=0).reset_index(drop=True)
+    print(f"识别并删除的多数类样本数: {len(set(removed_maj_indices))}")
+
+    return cleaned_data
