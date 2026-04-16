@@ -742,6 +742,9 @@ def prepare_univariate_lstm_data(data: pd.DataFrame, scaler=None):
         X = temp_scaled.reshape(-1, WINDOW_SIZE, 1)
         return X, y, scaler
 
+    """
+        平衡数据时的单变量LSTM数据准备
+    """
     feature_col = "iTemperature"
     temp_values = df_copy[feature_col].values.reshape(-1, 1)
     if scaler is None:
@@ -787,7 +790,7 @@ def convert_features(data: pd.DataFrame):
         # 确保每个分组都包含完整的48个时间步长数据
         if len(group) >= WINDOW_SIZE:
             # 提取48个iTemperature值
-            vals = group["iTemperature"].values[:WINDOW_SIZE]
+            vals = group["iTemperature"].values[len(group) - WINDOW_SIZE :]
 
             # 如果isEstrus列中存在1，则该样本标签为1，否则为0
             label = group["isEstrus"].max()
@@ -809,9 +812,30 @@ def convert_features(data: pd.DataFrame):
 
 # 增加 temperatureRate 特征
 def prepare_lstm_data(data: pd.DataFrame, scaler=None):
-    feature_col = ["iTemperature", "temperatureRate"]
     df_copy = data.copy()
 
+    if len(df_copy.columns) >= WINDOW_SIZE:
+        X_raw = df_copy.iloc[:, 1:-1].values
+        y = df_copy.iloc[:, -1].values
+
+        num_features = X_raw.shape[1] // WINDOW_SIZE
+        temp_values = (
+            X_raw.reshape(-1, num_features, WINDOW_SIZE)
+            .transpose(0, 2, 1)
+            .reshape(-1, num_features)
+        )
+        if scaler is None:
+            scaler = StandardScaler()
+            temp_scaled = scaler.fit_transform(temp_values)
+        else:
+            temp_scaled = scaler.transform(temp_values)
+        X = temp_scaled.reshape(-1, WINDOW_SIZE, num_features)
+        return X, y, scaler
+
+    """
+        平衡数据时的单变量LSTM数据准备
+    """
+    feature_col = ["iTemperature", "temperatureRate"]
     temp_values = df_copy[feature_col].values
     if scaler is None:
         scaler = StandardScaler()
@@ -1053,55 +1077,70 @@ def ADASYN(threshold, gamma, df_min: pd.DataFrame, df_maj: pd.DataFrame, k=7):
     return pd.concat([df_min, df_maj], axis=0)
 
 
-def SMOTE(df_min: pd.DataFrame, amount_oversampling=400, k=5):
+def SMOTE(data: pd.DataFrame, amount_oversampling=400, k=5):
     """ "
-    df_min: 少数类样本的 DataFrame
+    data: 训练集数据
     amount_oversampling: 过采样比例
     k: K近邻的数量
     """
-    X_min = df_min.iloc[:, 1:49].values
-    n_samples, n_features = X_min.shape
 
-    # 计算需要生成的合成样本数量
-    N = int(amount_oversampling / 100)
-    if N < 1:
-        # 比例小于 100% ,随机抽样进行 1:1 采样
-        indices = np.random.choice(
-            n_samples, size=int(N * amount_oversampling), replace=False
-        )
-        X_min_subset = X_min[indices]
-        n_samples = len(X_min_subset)
-        N = 1
-    else:
-        X_min_subset = X_min
+    all_smote_dfs = []
 
-    nn = NearestNeighbors(n_neighbors=k + 1).fit(X_min)
-    _, indices = nn.kneighbors(X_min_subset)
+    col_id = data.columns[0]
+    col_label = data.columns[-1]
+    col_features = data.columns[1:-1]
 
-    X_smote = []
-    for i in range(n_samples):
-        neighbor_indices = indices[i][1:]
-        for _ in range(N):
-            # 随机选择一个近邻 nn_idx
-            nn_idx = np.random.choice(neighbor_indices)
-            diff = X_min[nn_idx] - X_min_subset[i]
-            gap = random.random()
-            s_features = X_min_subset[i] + gap * diff
-            X_smote.append(s_features)
+    # 便利类别进行独立扩充
+    for label in data["isEstrus"].unique():
+        df_label = data[data["isEstrus"] == label].copy()
+        X_class = df_label.iloc[:, 1:49].values.astype(float)
+        n_samples = len(X_class)
 
-    if len(X_smote) > 0:
-        # 设为 9999 代表合成数据
-        smote_ids = [9999] * len(X_smote)
-        smote_labels = [1] * len(X_smote)
+        if n_samples <= 1:
+            continue
 
-        smote_data = np.column_stack([smote_ids, X_smote, smote_labels])
-        df_smote = pd.DataFrame(smote_data, columns=df_min.columns)
+        N = int(amount_oversampling / 100)
+        if N < 1:
+            # 比例小于100%时,随机选择部分样本进行过采样
+            sample_size = int(n_samples * amount_oversampling / 100)
+            indices = np.random.choice(n_samples, size=sample_size, replace=False)
+            X_subset = X_class[indices]
+            n_gen_loop = len(X_subset)
+            N_to_gen = 1
+        else:
+            # 比例大于等于100%时,对全部样本进行过采样
+            X_subset = X_class
+            n_gen_loop = n_samples
+            N_to_gen = N
 
-        df_smote["sSowsNo"] = df_smote["sSowsNo"].astype(str)
-        df_smote["isEstrus"] = df_smote["isEstrus"].astype(int)
-        return df_smote
+        nn = NearestNeighbors(n_neighbors=min(k + 1, n_samples)).fit(X_class)
+        _, indices = nn.kneighbors(X_subset)
 
-    return pd.DataFrame(columns=df_min.columns)
+        X_smote_class = []
+        for i in range(n_gen_loop):
+            neighbor_indices = indices[i][1:]
+            for _ in range(N_to_gen):
+                nn_idx = np.random.choice(neighbor_indices)
+                diff = X_class[nn_idx] - X_subset[i]
+                gap = np.random.random()
+                s_features = X_subset[i] + gap * diff
+                X_smote_class.append(s_features)
+
+        if len(X_smote_class) > 0:
+            df_smote_class = pd.DataFrame(X_smote_class, columns=col_features)
+            df_smote_class.insert(
+                0, col_id, [f"smote_{label}_{i}" for i in range(len(df_smote_class))]
+            )
+            df_smote_class[col_label] = label
+            all_smote_dfs.append(df_smote_class)
+
+    df_augmented = pd.concat([data] + all_smote_dfs, axis=0).reset_index(drop=True)
+    df_augmented["sSowsNo"] = df_augmented["sSowsNo"].astype(str)
+    df_augmented["isEstrus"] = df_augmented["isEstrus"].astype(int)
+
+    print(f"原始样本总数: {len(data)}")
+    print(f"过采样后总数: {len(df_augmented)}")
+    return df_augmented
 
 
 def TomekLinked(data: pd.DataFrame, k):

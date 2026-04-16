@@ -101,19 +101,21 @@ def load_combined_dataset(file_name, num_features=2):
 
 # 修改第二个参数以获取存放路径
 saved_file_path = os.path.join(
-    info_FINAL_SAVE_PATH, "DATA_NotCor_AddTempRate_2026_0406_1213"
+    info_FINAL_SAVE_PATH, "DATA_AST_AddTempRate_2026_0416_1754"
 )
 layer_hidden_size = 64
 
-VERSION_TRAIN = "BiLSTM_MultiHeadAttn"
+VERSION_TRAIN = "BiLSTM_DATA_AST_AddTempRate"
 
 
 def main():
     print(f"本次实验数据读取于 {saved_file_path}")
     X_train, y_train = load_combined_dataset(
-        os.path.join(saved_file_path, "train.xlsx")
+        os.path.join(saved_file_path, "train.xlsx"), num_features=2
     )
-    X_val, y_val = load_combined_dataset(os.path.join(saved_file_path, "val.xlsx"))
+    X_val, y_val = load_combined_dataset(
+        os.path.join(saved_file_path, "val.xlsx"), num_features=2
+    )
     print(f"X_train 原始形状: {X_train.shape}")
 
     # 结果保存
@@ -135,10 +137,10 @@ def main():
     # 初始化模型、损失函数和优化器
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    # model = EstrusLSTM(input_size=2, hidden_size=layer_hidden_size).to(device)
-    model = EstrusLSTM_MultiHeadAttn(input_size=2, hidden_size=layer_hidden_size).to(
+    model = EstrusLSTM(input_size=2, hidden_size=layer_hidden_size).to(device)
+    """ model = EstrusLSTM_MultiHeadAttn(input_size=2, hidden_size=layer_hidden_size).to(
         device
-    )
+    ) """
 
     # 使用二元交叉熵损失函数
     criterion = nn.BCELoss()
@@ -148,7 +150,7 @@ def main():
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_val)"""
 
     # 优化器 新增权重衰减(L2正则化)
-    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-4)
+    optimizer = optim.Adam(model.parameters(), lr=0.0005, weight_decay=1e-4)
     # 新增：学习率调度器(动态调整学习率)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, "min", patience=5, factor=0.5

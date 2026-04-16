@@ -8,7 +8,7 @@ from datetime import datetime
 
 pd.set_option("future.no_silent_downcasting", True)
 
-VERSION_DP = "DATA_ADASYN"
+VERSION_DP = "DATA_AST_AddTempRate"
 timestamp = datetime.now().strftime("%Y_%m%d_%H%M")
 SAVE_PATH_DP = os.path.join(info_FINAL_SAVE_PATH, f"{VERSION_DP}_{timestamp}")
 
@@ -55,16 +55,36 @@ if __name__ == "__main__":
     val_df = myFunction.fill_data(val_df_raw)
     test_df = myFunction.fill_data(test_df_raw)
 
+    """
+        不平衡数据处理
+    """
+    # 转换特征维度
+    df_copy = train_df.copy()
+    df_convert_features = myFunction.convert_features(df_copy)
+    # ADASYN 过采样
+    df_adasyn = myFunction.apply_adasyn(df_convert_features, gamma=1, k=5)
+    # SMOTE 过采样
+    df_smote = myFunction.apply_smote(df_adasyn, k_neighbors=7)
+    # TomekLinked 欠采样
+    df_tomek = myFunction.TomekLinked(df_smote, k=1)
+    # 增加温度变化率
+    temperature_features = df_tomek.iloc[:, 1:-1].copy()
+    rate_features = temperature_features.diff(axis=1).fillna(0)
+    rate_features.columns = [f"features{i}" for i in range(49, 97)]
+    df_final = pd.concat(
+        [df_tomek.iloc[:, :-1], rate_features, df_tomek.iloc[:, -1]], axis=1
+    )
+
     # ++++++++++ 最终实验数据 ++++++++++
     # 单温度变量
-    """X_train, y_train, train_scaler = myFunction.prepare_univariate_lstm_data(train_df)
+    """ X_train, y_train, train_scaler = myFunction.prepare_univariate_lstm_data(df_tomek)
     print(f"训练集 X_train 形状: {X_train.shape}, y_train 形状: {y_train.shape}")
     X_val, y_val, _ = myFunction.prepare_univariate_lstm_data(val_df, train_scaler)
     print(f"验证集 X_val 形状: {X_val.shape}, y_val 形状: {y_val.shape}")
     X_test, y_test, _ = myFunction.prepare_univariate_lstm_data(test_df, train_scaler)
-    print(f"测试集 X_test 形状: {X_test.shape}, y_test 形状: {y_test.shape}")"""
+    print(f"测试集 X_test 形状: {X_test.shape}, y_test 形状: {y_test.shape}") """
     # 增加温度变化率
-    X_train, y_train, train_scaler = myFunction.prepare_lstm_data(train_df)
+    X_train, y_train, train_scaler = myFunction.prepare_lstm_data(df_final)
     print(f"训练集 X_train 形状: {X_train.shape}, y_train 形状: {y_train.shape}")
     X_val, y_val, _ = myFunction.prepare_lstm_data(val_df, train_scaler)
     print(f"验证集 X_val 形状: {X_val.shape}, y_val 形状: {y_val.shape}")
