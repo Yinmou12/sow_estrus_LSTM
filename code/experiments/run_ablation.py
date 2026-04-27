@@ -10,6 +10,7 @@ import json
 import os
 import sys
 from datetime import datetime
+from dataclasses import asdict
 
 import numpy as np
 import pandas as pd
@@ -23,6 +24,9 @@ from configs.ablation_configs import (
     ABLATION_EXPERIMENTS,
     get_all_experiment_keys,
     print_experiment_summary,
+)
+from configs.ablation_configs import (
+    ModelConfig,
 )
 from ablation_study import run_experiment
 
@@ -65,6 +69,7 @@ def run_all_experiments(
     print("=" * 80)
 
     # 保存实验配置
+    model_config = ModelConfig()
     config_summary = {
         "data_path": data_path,
         "result_dir": result_base,
@@ -72,6 +77,7 @@ def run_all_experiments(
         "num_runs": num_runs,
         "experiments": experiment_keys,
         "start_time": datetime.now().isoformat(),
+        "model_config": asdict(model_config),
     }
 
     with open(os.path.join(result_base, "run_config.json"), "w") as f:

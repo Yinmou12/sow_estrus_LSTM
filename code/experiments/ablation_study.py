@@ -674,7 +674,8 @@ def run_experiment(
         },
         "best_val_metrics_per_run": best_val_metrics_list,
         "test_metrics_per_run": test_metrics_list,  # 新增测试集指标
-        "avg_test_metrics": avg_test_metrics,  # 新增平均测试集指标
+        "avg_test_metrics": avg_test_metrics,  # 平均测试集指标
+        "std_test_metrics": std_test_metrics,
         "avg_metrics": avg_metrics,
         "std_metrics": std_metrics,
         "all_histories": [r["history"] for r in all_run_results],

@@ -11,7 +11,7 @@ from torch.utils.data import Dataset, DataLoader
 
 if __name__ == "__main__":
     # 更改模型存放的对应文件名称
-    file_name = "LSTM\\BiLSTM_MultiHeadAttn_2026_0411_1036"
+    file_name = "LSTM\\BiLSTM_DATA_AST_AddTempRate_2026_0427_1531"
     saved_path = os.path.join(result_save_path, file_name)
     model_saved_path = os.path.join(saved_path, "best_model.pth")
 
@@ -23,10 +23,10 @@ if __name__ == "__main__":
     test_loader = DataLoader(EstrusDataset(X_test, y_test), batch_size)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # model = EstrusLSTM(input_size=2, hidden_size=layer_hidden_size).to(device)
-    model = EstrusLSTM_MultiHeadAttn(input_size=2, hidden_size=layer_hidden_size).to(
+    model = EstrusLSTM(input_size=2, hidden_size=layer_hidden_size).to(device)
+    """ model = EstrusLSTM_MultiHeadAttn(input_size=2, hidden_size=layer_hidden_size).to(
         device
-    )
+    ) """
     model.load_state_dict(torch.load(model_saved_path))
 
     # 评估
@@ -41,8 +41,8 @@ if __name__ == "__main__":
     )
 
     # 绘图
-    saved_pictures_path = os.path.join(saved_path, "pictures")
-    # saved_pictures_path = os.path.join(saved_path, "again", "pictures")
+    # saved_pictures_path = os.path.join(saved_path, "pictures")
+    saved_pictures_path = os.path.join(saved_path, "again", "pictures")
     os.makedirs(saved_pictures_path, exist_ok=True)
 
     # 混淆矩阵

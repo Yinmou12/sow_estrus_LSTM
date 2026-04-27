@@ -242,9 +242,10 @@ def main():
         f.write(f"dropout_rate=0.5\t")
         f.write("\n")
         f.write("+" * 20 + " 其它信息 " + "+" * 20 + "\n")
-        f.write(f"新增温度变化率特征\n")
-        f.write(f"新增多头注意力机制\n")
-        # f.write(f"池化层采用torch.max捕捉最显著的温升特征\n")
+        f.write(f"ADASYN -- gamma: 1, k=5\n")
+        f.write(f"SMOTE -- amount_oversampling: 800, k: 7\n")
+        f.write(f"TomekLinked 欠采样\n")
+        f.write(f"增加温度变化率特征\n")
     print(f"数据来源记录已保存至: {info_log_path}")
 
     # 验证集历史指标
