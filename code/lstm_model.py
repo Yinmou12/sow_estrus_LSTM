@@ -73,7 +73,7 @@ import torch.nn.functional as F
 
 
 class EstrusLSTM(nn.Module):
-    def __init__(self, input_size=1, hidden_size=128, num_layers=3, dropout_rate=0.2):
+    def __init__(self, input_size=1, hidden_size=128, num_layers=4, dropout_rate=0.2):
         super(EstrusLSTM, self).__init__()
 
         self.lstm = nn.LSTM(

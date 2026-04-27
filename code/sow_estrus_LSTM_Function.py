@@ -742,9 +742,6 @@ def prepare_univariate_lstm_data(data: pd.DataFrame, scaler=None):
         X = temp_scaled.reshape(-1, WINDOW_SIZE, 1)
         return X, y, scaler
 
-    """
-        平衡数据时的单变量LSTM数据准备
-    """
     feature_col = "iTemperature"
     temp_values = df_copy[feature_col].values.reshape(-1, 1)
     if scaler is None:
@@ -832,9 +829,6 @@ def prepare_lstm_data(data: pd.DataFrame, scaler=None):
         X = temp_scaled.reshape(-1, WINDOW_SIZE, num_features)
         return X, y, scaler
 
-    """
-        平衡数据时的单变量LSTM数据准备
-    """
     feature_col = ["iTemperature", "temperatureRate"]
     temp_values = df_copy[feature_col].values
     if scaler is None:
@@ -1007,7 +1001,7 @@ def plot_matrix(y_true, y_pred, save_dir=None):
 def ADASYN(threshold, gamma, df_min: pd.DataFrame, df_maj: pd.DataFrame, k=7):
     """
     threshold: 过采样的阈值
-    gamma: 过采样的强度,通常在0到1之间,值越大表示生成的合成样本越多
+    gamma: 过采样的强度
     df_min: 少数类样本
     df_maj: 多数类样本
     k: k近邻的数量
@@ -1017,8 +1011,8 @@ def ADASYN(threshold, gamma, df_min: pd.DataFrame, df_maj: pd.DataFrame, k=7):
         return pd.concat([df_min, df_maj], axis=0).reset_index(drop=True)
 
     # 特征矩阵
-    X_min = df_min.iloc[:, 1:49].values
-    X_maj = df_maj.iloc[:, 1:49].values
+    X_min = df_min.iloc[:, 1:49].values.astype(float)
+    X_maj = df_maj.iloc[:, 1:49].values.astype(float)
     X_all = np.vstack((X_min, X_maj))
 
     # 标签数组用于统计近邻类别
@@ -1060,18 +1054,22 @@ def ADASYN(threshold, gamma, df_min: pd.DataFrame, df_maj: pd.DataFrame, k=7):
 
     # 构造新的DataFrame
     if len(X_syn) > 0:
-        syn_ids = [f"adasyn_{i}" for i in range(len(X_syn))]
-        syn_labels = [1] * len(X_syn)
-        # (N, 50)的结构
-        syn_data = np.column_stack([syn_ids, X_syn, syn_labels])
-        df_syn = pd.DataFrame(syn_data, columns=df_min.columns)
+        # 先用纯 float 特征构造 DataFrame
+        feat_cols = df_min.columns[1:49]
+        df_syn = pd.DataFrame(X_syn, columns=feat_cols)
+
+        # 单独插入 ID 列和标签列，不影响特征列的 dtype
+        df_syn.insert(0, df_min.columns[0], [f"adasyn_{i}" for i in range(len(X_syn))])
+        df_syn[df_min.columns[-1]] = 1
+
         # 合并
         df_augmented = pd.concat([df_min, df_maj, df_syn], axis=0).reset_index(
             drop=True
         )
-        # 确保数据类型
-        df_augmented["sSowsNo"] = df_augmented["sSowsNo"].astype(str)
-        df_augmented["isEstrus"] = df_augmented["isEstrus"].astype(int)
+
+        # 确保类型转换
+        df_augmented[df_min.columns[0]] = df_augmented[df_min.columns[0]].astype(str)
+        df_augmented[df_min.columns[-1]] = df_augmented[df_min.columns[-1]].astype(int)
         return df_augmented
 
     return pd.concat([df_min, df_maj], axis=0)
