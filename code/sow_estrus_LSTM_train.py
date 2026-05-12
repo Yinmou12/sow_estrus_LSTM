@@ -105,17 +105,16 @@ def load_combined_dataset(file_name, num_features=2):
     return X_3d, y
 
 
-# 修改第二个参数以获取存放路径
-"""
+class __train_info:
+    """
     DATA_NotCor_AddTempRate_2026_0406_1213 : 耳温+变化率 未进行数据增强
     DATA_AST_AddTempRate_2026_0416_1754 : 耳温+变化率 数据增强
-"""
+    """
 
-
-class __train_info:
     saved_file_path = os.path.join(
         info_FINAL_SAVE_PATH, "DATA_NotCor_AddTempRate_2026_0406_1213"
     )
+
     """
         模型参数
     """
