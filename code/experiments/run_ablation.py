@@ -114,6 +114,7 @@ def run_all_experiments(
     print("=" * 80)
 
     summary_table = []
+
     for key in experiment_keys:
         if key in all_results and "error" not in all_results[key]:
             result = all_results[key]
@@ -127,6 +128,21 @@ def run_all_experiments(
                     "Recall": f"{avg['recall']:.4f}±{std['recall']:.4f}",
                     "F1": f"{avg['f1']:.4f}±{std['f1']:.4f}",
                     "AUC": f"{avg['auc']:.4f}±{std['auc']:.4f}",
+                    "MCC": f"{avg['mcc']:.4f}±{std['mcc']:.4f}",
+                }
+            )
+
+            avg = result["avg_test_metrics"]
+            std = result["std_test_metrics"]
+            summary_table.append(
+                {
+                    "实验": "test",
+                    "Accuracy": f"{avg['accuracy']:.4f}±{std['accuracy']:.4f}",
+                    "Precision": f"{avg['precision']:.4f}±{std['precision']:.4f}",
+                    "Recall": f"{avg['recall']:.4f}±{std['recall']:.4f}",
+                    "F1": f"{avg['f1']:.4f}±{std['f1']:.4f}",
+                    "AUC": f"{avg['auc']:.4f}±{std['auc']:.4f}",
+                    "MCC": f"{avg['mcc']:.4f}±{std['mcc']:.4f}",
                 }
             )
 

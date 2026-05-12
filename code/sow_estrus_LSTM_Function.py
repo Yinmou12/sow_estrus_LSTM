@@ -23,6 +23,7 @@ from sklearn.metrics import (
     recall_score,
     f1_score,
     roc_auc_score,
+    matthews_corrcoef,
 )
 from sklearn.model_selection import train_test_split
 from sklearn.neighbors import NearestNeighbors
@@ -951,6 +952,7 @@ def plot_matrix(y_true, y_pred, save_dir=None):
     recall = recall_score(y_true, y_pred) * 100
     f1 = f1_score(y_true, y_pred) * 100
     auc = roc_auc_score(y_true, y_pred) * 100
+    mcc = matthews_corrcoef(y_true, y_pred) * 100
 
     metrics_name = ["Accuracy", "Precision", "Recall", "F1 Score", "AUC"]
     metrics_values = [accuracy, precision, recall, f1, auc]
@@ -992,6 +994,7 @@ def plot_matrix(y_true, y_pred, save_dir=None):
     print(f"测试集召回率 (Recall): {recall:.4f}")
     print(f"测试集 F1 分数: {f1:.4f}")
     print(f"测试集 AUC 指标: {auc:.4f}")
+    print(f"测试集 MCC : {mcc}:.4f")
 
     print(f"\n--- 混淆矩阵详细分析 ---")
     print(f"真负类 (TN): {tn} | 伪正类 (FP): {fp} (误报)")

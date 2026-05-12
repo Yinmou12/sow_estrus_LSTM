@@ -24,6 +24,7 @@ from sklearn.metrics import (
     recall_score,
     f1_score,
     roc_auc_score,
+    matthews_corrcoef,
 )
 
 # 添加父目录到路径以导入模块
@@ -43,7 +44,6 @@ from configs.ablation_configs import (
     DataAugmentationConfig,
     ModelConfig,
 )
-
 
 # ============================================================================
 # 数据集类
@@ -351,8 +351,9 @@ def evaluate_model(
     recall = recall_score(all_labels, all_preds, zero_division=0)
     f1 = f1_score(all_labels, all_preds, zero_division=0)
     roc_auc = roc_auc_score(all_labels, all_probs)
+    mcc = matthews_corrcoef(all_labels, all_preds)
 
-    return avg_loss, accuracy, precision, recall, f1, roc_auc
+    return avg_loss, accuracy, precision, recall, f1, roc_auc, mcc
 
 
 def train_single_run(
@@ -421,6 +422,7 @@ def train_single_run(
         "val_recall": [],
         "val_f1": [],
         "val_auc": [],
+        "val_mcc": [],
     }
 
     # 训练循环
@@ -441,7 +443,7 @@ def train_single_run(
             train_loss += loss.item()
 
         # 验证
-        val_loss, val_acc, val_prec, val_rec, val_f1, val_auc = evaluate_model(
+        val_loss, val_acc, val_prec, val_rec, val_f1, val_auc, mcc = evaluate_model(
             model, val_loader, criterion, device
         )
 
@@ -453,6 +455,7 @@ def train_single_run(
         history["val_recall"].append(val_rec)
         history["val_f1"].append(val_f1)
         history["val_auc"].append(val_auc)
+        history["val_mcc"].append(mcc)
 
         # 学习率调度
         if scheduler is not None:
@@ -470,7 +473,7 @@ def train_single_run(
     # 加载最佳模型并返回最佳验证结果
     model.load_state_dict(torch.load(best_model_path, weights_only=True))
 
-    val_loss, val_acc, val_prec, val_rec, val_f1, val_auc = evaluate_model(
+    val_loss, val_acc, val_prec, val_rec, val_f1, val_auc, val_mcc = evaluate_model(
         model, val_loader, criterion, device
     )
 
@@ -483,6 +486,7 @@ def train_single_run(
             "recall": val_rec,
             "f1": val_f1,
             "auc": val_auc,
+            "mcc": val_mcc,
         },
         "early_stop_epoch": len(history["train_loss"]),
     }
@@ -583,6 +587,7 @@ def run_experiment(
                 f"Recall: {metrics['recall']:.4f}, "
                 f"F1: {metrics['f1']:.4f}, "
                 f"AUC: {metrics['auc']:.4f}"
+                f"MCC: {metrics['mcc']:.4f}"
             )
 
         # 在测试集上评估最佳模型
@@ -597,8 +602,8 @@ def run_experiment(
             EstrusDataset(X_test, y_test), batch_size=config.model.batch_size
         )
         criterion = build_criterion(config.model, device)
-        test_loss, test_acc, test_prec, test_rec, test_f1, test_auc = evaluate_model(
-            model_for_test, test_loader, criterion, device
+        test_loss, test_acc, test_prec, test_rec, test_f1, test_auc, test_mcc = (
+            evaluate_model(model_for_test, test_loader, criterion, device)
         )
         test_metrics_list.append(
             {
@@ -608,11 +613,12 @@ def run_experiment(
                 "recall": test_rec,
                 "f1": test_f1,
                 "auc": test_auc,
+                "mcc": test_mcc,
             }
         )
         if verbose:
             print(
-                f"测试集指标 - Acc: {test_acc:.4f}, Precision: {test_prec:.4f}, Recall: {test_rec:.4f}, F1: {test_f1:.4f}, AUC: {test_auc:.4f}"
+                f"测试集指标 - Acc: {test_acc:.4f}, Precision: {test_prec:.4f}, Recall: {test_rec:.4f}, F1: {test_f1:.4f}, AUC: {test_auc:.4f}, MCC: {test_mcc:.4f}"
             )
 
     # 计算平均指标
@@ -631,6 +637,7 @@ def run_experiment(
     print(f"  Recall:    {avg_metrics['recall']:.4f} ± {std_metrics['recall']:.4f}")
     print(f"  F1:        {avg_metrics['f1']:.4f} ± {std_metrics['f1']:.4f}")
     print(f"  AUC:       {avg_metrics['auc']:.4f} ± {std_metrics['auc']:.4f}")
+    print(f"  MCC:       {avg_metrics['mcc']:.4f} ± {std_metrics['mcc']:.4f}")
 
     # 计算平均测试指标
     avg_test_metrics = {}
@@ -652,6 +659,7 @@ def run_experiment(
     )
     print(f"  F1:        {avg_test_metrics['f1']:.4f} ± {std_test_metrics['f1']:.4f}")
     print(f"  AUC:       {avg_test_metrics['auc']:.4f} ± {std_test_metrics['auc']:.4f}")
+    print(f"  MCC:       {avg_test_metrics['mcc']:.4f} ± {std_test_metrics['mcc']:.4f}")
 
     # 保存结果
     result = {
@@ -675,7 +683,7 @@ def run_experiment(
         "best_val_metrics_per_run": best_val_metrics_list,
         "test_metrics_per_run": test_metrics_list,  # 新增测试集指标
         "avg_test_metrics": avg_test_metrics,  # 平均测试集指标
-        "std_test_metrics": std_test_metrics,
+        "std_test_metrics": std_test_metrics,  # 测试集指标标准差
         "avg_metrics": avg_metrics,
         "std_metrics": std_metrics,
         "all_histories": [r["history"] for r in all_run_results],

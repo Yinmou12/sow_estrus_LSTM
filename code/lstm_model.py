@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-
 """class EstrusLSTM(nn.Module):
     def __init__(self, input_size=1, hidden_size=64, num_layers=2, dropout=0.2):
         super(EstrusLSTM, self).__init__()
@@ -73,8 +72,17 @@ import torch.nn.functional as F
 
 
 class EstrusLSTM(nn.Module):
-    def __init__(self, input_size=1, hidden_size=128, num_layers=4, dropout_rate=0.2):
+    def __init__(
+        self,
+        input_size=1,
+        hidden_size=128,
+        num_layers=4,
+        dropout_rate=0.2,
+        use_cell_state=True,
+    ):
         super(EstrusLSTM, self).__init__()
+
+        self.use_cell_state = use_cell_state
 
         self.lstm = nn.LSTM(
             input_size=input_size,
@@ -85,21 +93,28 @@ class EstrusLSTM(nn.Module):
             bidirectional=True,  # 双向LSTM
         )
         # 双向LSTM的输出维度是 2*hidden_size
-        self.fc1 = nn.Linear(2 * hidden_size, 32)
+        feat_dim = 4 * hidden_size if use_cell_state else 2 * hidden_size
+        self.fc1 = nn.Linear(feat_dim, 32)
         self.fc2 = nn.Linear(32, 1)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout_rate)
-        self.batch_norm = nn.LayerNorm(2 * hidden_size)
+        self.layer_norm = nn.LayerNorm(feat_dim)
 
     def forward(self, x):
         out, (h_n, c_n) = self.lstm(x)
         # 提取最后两层（即第3层的正向和反向）的隐藏状态
         # h_n[-2,:,:] 是最后一层的正向状态
         # h_n[-1,:,:] 是最后一层的反向状态
-        feature = torch.cat(
-            (h_n[-2, :, :], h_n[-1, :, :]), dim=1
-        )  # 形状: (batch, 2*hidden_size)
-        out = self.batch_norm(feature)
+        h_forward = h_n[-2, :, :]
+        h_backward = h_n[-1, :, :]
+        if self.use_cell_state:
+            c_forward = c_n[-2, :, :]
+            c_backward = c_n[-1, :, :]
+            feature = torch.cat([h_forward, h_backward, c_forward, c_backward], dim=1)
+        else:
+            feature = torch.cat([h_forward, h_backward], dim=1)
+
+        out = self.layer_norm(feature)
         out = self.relu(self.fc1(out))
         out = self.dropout(out)
         out = torch.sigmoid(self.fc2(out))

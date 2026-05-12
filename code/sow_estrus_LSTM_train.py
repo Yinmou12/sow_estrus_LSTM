@@ -23,6 +23,7 @@ from sklearn.metrics import (
     recall_score,
     f1_score,
     roc_auc_score,
+    matthews_corrcoef,
 )
 
 import torch
@@ -72,12 +73,23 @@ def evaluate_model(model, loader, criterion, device):
     avg_loss = total_loss / len(loader)
 
     accuracy = accuracy_score(all_labels, all_preds)
-    precision = precision_score(all_labels, all_preds)
-    recall = recall_score(all_labels, all_preds)
-    f1 = f1_score(all_labels, all_preds)
+    precision = precision_score(all_labels, all_preds, zero_division=0)
+    recall = recall_score(all_labels, all_preds, zero_division=0)
+    f1 = f1_score(all_labels, all_preds, zero_division=0)
     roc_auc = roc_auc_score(all_labels, all_raw_probs)
+    mcc = matthews_corrcoef(all_labels, all_preds)
 
-    return avg_loss, accuracy, precision, recall, f1, roc_auc, all_preds, all_labels
+    metrics_dict = {
+        "avg_loss": avg_loss,
+        "Accuracy": accuracy,
+        "Precision": precision,
+        "Recall": recall,
+        "F1-Score": f1,
+        "AUC": roc_auc,
+        "MCC": mcc,
+    }
+
+    return metrics_dict, all_labels, all_preds
 
 
 def load_combined_dataset(file_name, num_features=2):
@@ -94,21 +106,54 @@ def load_combined_dataset(file_name, num_features=2):
 
 
 # 修改第二个参数以获取存放路径
-saved_file_path = os.path.join(
-    info_FINAL_SAVE_PATH, "DATA_AST_AddTempRate_2026_0416_1754"
-)
-layer_hidden_size = 64
+"""
+    DATA_NotCor_AddTempRate_2026_0406_1213 : 耳温+变化率 未进行数据增强
+    DATA_AST_AddTempRate_2026_0416_1754 : 耳温+变化率 数据增强
+"""
 
-VERSION_TRAIN = "BiLSTM_DATA_AST_AddTempRate"
+
+class __train_info:
+    saved_file_path = os.path.join(
+        info_FINAL_SAVE_PATH, "DATA_NotCor_AddTempRate_2026_0406_1213"
+    )
+    """
+        模型参数
+    """
+    num_feature: int = 2
+    input_size: int = 2
+    layer_hidden_size: int = 64
+    learning_rate = 0.0005
+    use_cell_state: bool = True
+    dropout_rate = 0.2
+    """
+        训练控制参数
+    """
+    batch_size: int = 32
+    num_epochs: int = 100
+    early_patience: int = 7
+
+    # VERSION_TRAIN = "BiLSTM_AddTempRate"
+    VERSION_TRAIN = "BiLSTM"
 
 
 def main():
+    train_info = __train_info()
+    saved_file_path = train_info.saved_file_path
+    num_feature = train_info.num_feature
+    input_size = train_info.input_size
+    layer_hidden_size = train_info.layer_hidden_size
+    learning_rate = train_info.learning_rate
+    use_cell_state = train_info.use_cell_state
+    dropout_rate = train_info.dropout_rate
+    batch_size = train_info.batch_size
+    VERSION_TRAIN = train_info.VERSION_TRAIN
+
     print(f"本次实验数据读取于 {saved_file_path}")
     X_train, y_train = load_combined_dataset(
-        os.path.join(saved_file_path, "train.xlsx"), num_features=2
+        os.path.join(saved_file_path, "train.xlsx"), num_features=num_feature
     )
     X_val, y_val = load_combined_dataset(
-        os.path.join(saved_file_path, "val.xlsx"), num_features=2
+        os.path.join(saved_file_path, "val.xlsx"), num_features=num_feature
     )
     print(f"X_train 原始形状: {X_train.shape}")
 
@@ -131,10 +176,12 @@ def main():
     # 初始化模型、损失函数和优化器
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    model = EstrusLSTM(input_size=2, hidden_size=layer_hidden_size).to(device)
-    """ model = EstrusLSTM_MultiHeadAttn(input_size=2, hidden_size=layer_hidden_size).to(
-        device
-    ) """
+    model = EstrusLSTM(
+        input_size=input_size,
+        hidden_size=layer_hidden_size,
+        use_cell_state=use_cell_state,
+        dropout_rate=dropout_rate,
+    ).to(device)
 
     # 使用二元交叉熵损失函数
     criterion = nn.BCELoss()
@@ -144,7 +191,7 @@ def main():
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_val)"""
 
     # 优化器 新增权重衰减(L2正则化)
-    optimizer = optim.Adam(model.parameters(), lr=0.0005, weight_decay=1e-4)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     # 新增：学习率调度器(动态调整学习率)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, "min", patience=5, factor=0.5
@@ -159,10 +206,10 @@ def main():
         "val_recall": [],
         "val_f1": [],
         "val_auc": [],
+        "val_mcc": [],
     }
 
     # 创建数据集和数据加载器
-    batch_size = 32
     train_loader = DataLoader(
         EstrusDataset(X_train, y_train), batch_size, shuffle=True, drop_last=True
     )
@@ -171,8 +218,8 @@ def main():
         batch_size,
     )
 
-    num_epochs = 100
-    early_patience = 7
+    num_epochs = train_info.num_epochs
+    early_patience = train_info.early_patience
 
     early_stopping = EarlyStopping(
         patience=early_patience, verbose=True, path=best_model_path
@@ -195,23 +242,22 @@ def main():
             train_loss += loss.item()
 
         # 验证阶段
-        val_loss, val_accuracy, val_precision, val_recall, val_f1, val_auc, _, _ = (
-            evaluate_model(model, val_loader, criterion, device)
-        )
+        record_dict, _, _ = evaluate_model(model, val_loader, criterion, device)
         # 存放指标记录
         history["train_loss"].append(train_loss / len(train_loader))
-        history["val_loss"].append(val_loss)
-        history["val_accuracy"].append(val_accuracy)
-        history["val_precision"].append(val_precision)
-        history["val_recall"].append(val_recall)
-        history["val_f1"].append(val_f1)
-        history["val_auc"].append(val_auc)
+        history["val_loss"].append(record_dict["avg_loss"])
+        history["val_accuracy"].append(record_dict["Accuracy"])
+        history["val_precision"].append(record_dict["Precision"])
+        history["val_recall"].append(record_dict["Recall"])
+        history["val_f1"].append(record_dict["F1-Score"])
+        history["val_auc"].append(record_dict["AUC"])
+        history["val_mcc"].append(record_dict["MCC"])
 
         # 学习率调度
-        scheduler.step(val_loss)
+        scheduler.step(record_dict["avg_loss"])
 
         # early_stopping会决定是否保存当前 model 至 best_model_path
-        early_stopping(val_loss, model)
+        early_stopping(record_dict["avg_loss"], model)
 
         if early_stopping.early_stop:
             print("Early stopping triggered. Ending training.")
@@ -230,22 +276,26 @@ def main():
         f.write("-" * 45 + " 信息记录 " + "-" * 45 + "\n")
         f.write("\n")
         f.write(f"记录生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"实验版本 (VERSION): {VERSION_TRAIN}\n")
-        f.write(f"数据读取路径 (saved_file_path): {saved_file_path}\n")
-        f.write(f"结果保存路径 (saved_result_path): {saved_result_path}\n")
+        f.write(f"实验版本 (VERSION): {train_info.VERSION_TRAIN}\n")
+        f.write(f"数据读取路径 (saved_file_path): {train_info.saved_file_path}\n")
+        f.write(f"结果保存路径 (saved_result_path): {train_info.saved_result_path}\n")
         f.write("\n")
-        f.write("+" * 45 + "\n")
-        f.write(f"hidden_size: {layer_hidden_size}\t")
-        f.write(f"batch_size: {batch_size}\n")
-        f.write(f"early_patience: {early_patience}\t")
+        f.write("+" * 30 + " 模型参数 " + "+" * 30 + "\n")
+        f.write(f"num_features & input_size : {train_info.num_feature}\n")
+        f.write(f"hidden_size: {train_info.layer_hidden_size}\n")
+        f.write(f"use_cell_state: {train_info.use_cell_state}\n")
+        f.write(f"dropout_rate: {train_info.dropout_rate}\n")
+        f.write(f"batch_size: {train_info.batch_size}\n")
+        f.write(f"batch_size: {train_info.num_epochs}\n")
+        f.write(f"early_patience: {train_info.early_patience}\n")
         f.write(f"early_stopping_epoch: {early_stopping_epoch}\n")
-        f.write(f"dropout_rate=0.5\t")
         f.write("\n")
-        f.write("+" * 20 + " 其它信息 " + "+" * 20 + "\n")
-        f.write(f"ADASYN -- gamma: 1, k=5\n")
+        f.write("+" * 30 + " 其它信息 " + "+" * 30 + "\n")
+        """ f.write(f"ADASYN -- gamma: 1, k=5\n")
         f.write(f"SMOTE -- amount_oversampling: 800, k: 7\n")
         f.write(f"TomekLinked 欠采样\n")
-        f.write(f"增加温度变化率特征\n")
+        f.write(f"增加温度变化率特征\n") """
+        # f.write(f"关闭学习率调度")
     print(f"数据来源记录已保存至: {info_log_path}")
 
     # 验证集历史指标
