@@ -18,7 +18,7 @@ if __name__ == "__main__":
     use_cell_state = train_info.use_cell_state
 
     # 更改模型存放的对应文件名称
-    file_name = "LSTM\\BiLSTM_2026_0510_1820"
+    file_name = "LSTM\\BiLSTM_AddTempRate_2026_0515_1316"
     saved_path = os.path.join(result_save_path, file_name)
     model_saved_path = os.path.join(saved_path, "best_model.pth")
 

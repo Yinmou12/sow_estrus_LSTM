@@ -112,9 +112,8 @@ class __train_info:
     """
 
     saved_file_path = os.path.join(
-        info_FINAL_SAVE_PATH, "DATA_NotCor_AddTempRate_2026_0406_1213"
+        info_FINAL_SAVE_PATH, "DATA_AST_AddTempRate_2026_0416_1754"
     )
-
     """
         模型参数
     """
@@ -122,7 +121,7 @@ class __train_info:
     input_size: int = 2
     layer_hidden_size: int = 64
     learning_rate = 0.0005
-    use_cell_state: bool = True
+    use_cell_state: bool = False
     dropout_rate = 0.2
     """
         训练控制参数
@@ -130,9 +129,10 @@ class __train_info:
     batch_size: int = 32
     num_epochs: int = 100
     early_patience: int = 7
+    lr_patience: int = 5
 
-    # VERSION_TRAIN = "BiLSTM_AddTempRate"
-    VERSION_TRAIN = "BiLSTM"
+    # VERSION_TRAIN = "BiLSTM"
+    VERSION_TRAIN = "BiLSTM_DATA_AST_AddTempRate"
 
 
 def main():
@@ -277,7 +277,7 @@ def main():
         f.write(f"记录生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"实验版本 (VERSION): {train_info.VERSION_TRAIN}\n")
         f.write(f"数据读取路径 (saved_file_path): {train_info.saved_file_path}\n")
-        f.write(f"结果保存路径 (saved_result_path): {train_info.saved_result_path}\n")
+        f.write(f"结果保存路径 (saved_result_path): {saved_result_path}\n")
         f.write("\n")
         f.write("+" * 30 + " 模型参数 " + "+" * 30 + "\n")
         f.write(f"num_features & input_size : {train_info.num_feature}\n")

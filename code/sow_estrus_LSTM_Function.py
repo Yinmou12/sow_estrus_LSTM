@@ -25,7 +25,7 @@ from sklearn.metrics import (
     roc_auc_score,
     matthews_corrcoef,
 )
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, StratifiedKFold
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 
@@ -567,6 +567,70 @@ def stratified_group_split(df, train_ratio=0.7, val_ratio=0.1, test_ratio=0.2):
     return train_df, val_df, test_df
 
 
+# 5折分层分组交叉验证
+def stratified_group_kfold(df, n_splits=5, test_ratio=0.2, random_state=123):
+    """
+    先划分出独立测试集，再对剩余数据进行5折分层分组交叉验证。
+    确保同一母猪的数据不会同时出现在训练集、验证集或独立测试集中，并保持发情与非发情猪的比例。
+    """
+    # 确定每头猪是否发情（标签）
+    estrus_sows = df[df["isEstrus"] == 1]["sSowsNo"].unique()
+    all_sows = df["sSowsNo"].unique()
+
+    sow_labels = []
+    for sow in all_sows:
+        if sow in estrus_sows:
+            sow_labels.append(1)
+        else:
+            sow_labels.append(0)
+
+    sow_labels = np.array(sow_labels)
+    all_sows = np.array(all_sows)
+
+    # 划分独立测试集 (完全不参与交叉验证)
+    internal_sows, test_sows, internal_labels, test_labels = train_test_split(
+        all_sows,
+        sow_labels,
+        test_size=test_ratio,
+        stratify=sow_labels,
+        random_state=random_state,
+    )
+
+    independent_test_df = df[df["sSowsNo"].isin(test_sows)].copy()
+    print(
+        f"独立测试集划分完成: 总母猪数 {len(test_sows)}, 其中发情 {int(test_labels.sum())}, 非发情 {len(test_sows) - int(test_labels.sum())}"
+    )
+
+    # 在剩余的 internal 数据集上进行 5 折交叉验证
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+
+    folds = []
+    for train_idx, val_idx in skf.split(internal_sows, internal_labels):
+        train_sows_fold = internal_sows[train_idx]
+        val_sows_fold = internal_sows[val_idx]
+
+        train_df = df[df["sSowsNo"].isin(train_sows_fold)].copy()
+        val_df = df[df["sSowsNo"].isin(val_sows_fold)].copy()
+
+        folds.append((train_df, val_df))
+
+        # 打印当前折的划分结果
+        e_train_count = np.sum(internal_labels[train_idx] == 1)
+        n_train_count = np.sum(internal_labels[train_idx] == 0)
+        e_val_count = np.sum(internal_labels[val_idx] == 1)
+        n_val_count = np.sum(internal_labels[val_idx] == 0)
+
+        print(f"--- Fold {len(folds)} ---")
+        print(
+            f"训练集：母猪总数 {len(train_sows_fold)}, 其中发情猪 {e_train_count}, 非发情猪 {n_train_count}"
+        )
+        print(
+            f"验证集：母猪总数 {len(val_sows_fold)}, 其中发情猪 {e_val_count}, 非发情猪 {n_val_count}"
+        )
+
+    return independent_test_df, folds
+
+
 # 填补
 def function_filled(data: pd.DataFrame):
     if data.empty:
@@ -812,7 +876,8 @@ def convert_features(data: pd.DataFrame):
 def prepare_lstm_data(data: pd.DataFrame, scaler=None):
     df_copy = data.copy()
 
-    if len(df_copy.columns) >= WINDOW_SIZE:
+    # 如果已经是转换后的格式（即每行包含48个时间步的特征），则直接处理特征列
+    if len(df_copy.columns) >= WINDOW_SIZE + 2:
         X_raw = df_copy.iloc[:, 1:-1].values
         y = df_copy.iloc[:, -1].values
 

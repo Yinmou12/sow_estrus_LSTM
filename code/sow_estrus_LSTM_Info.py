@@ -2,6 +2,7 @@ WINDOW_SIZE = 48  # 获取截止发情时刻的数据时间长度
 SLIDING_WINDOW_SIZE = 1  # 发情时刻起向后滑动的窗口大小
 SAMPLE_COUNT = 4  # 非发情数据生成的随机数个数
 
+
 # 数据集列名
 columns_name = [
     "sEarTagCode",
@@ -40,6 +41,7 @@ result_save_path = (
 info_FINAL_SAVE_PATH = "D:\\_Software_Projects\\VSCode\\scientific_research\\sow_estrus\\my_code\\finalUsedData"
 
 max_rows = 1048575  # 单表最大行数
+
 
 # 发情时间_早上(M-09:00:00)或下午(A-16:00:00)_编号
 TIME_CHOICE = [
