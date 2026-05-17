@@ -27,7 +27,7 @@ import torch.nn as nn
 pd.set_option("future.no_silent_downcasting", True)
 
 # 消融实验默认配置
-""" ABLATION_CONFIGS = [
+ABLATION_CONFIGS = [
     {"name": "Baseline", "A": False, "S": False, "T": False},
     {"name": "ADASYN", "A": True, "S": False, "T": False},
     {"name": "SMOTE", "A": False, "S": True, "T": False},
@@ -36,9 +36,9 @@ pd.set_option("future.no_silent_downcasting", True)
     {"name": "ADASYN+TomekLinks", "A": True, "S": False, "T": True},
     {"name": "SMOTE+TomekLinks", "A": False, "S": True, "T": True},
     {"name": "Full_Aug", "A": True, "S": True, "T": True},
-] """
-
-ABLATION_CONFIGS = [{"name": "Full_Aug", "A": True, "S": True, "T": True}]
+]
+# ABLATION_CONFIGS = [{"name": "Baseline", "A": False, "S": False, "T": False}]
+# ABLATION_CONFIGS = [{"name": "Full_Aug", "A": True, "S": True, "T": True}]
 
 
 def run_5fold_cv(df):
@@ -63,7 +63,7 @@ def run_5fold_cv(df):
 
         # 数据预处理
         train_df = myFunction.fill_data(train_df_raw)
-        test_df = myFunction.fill_data(val_df_raw)
+        val_df = myFunction.fill_data(val_df_raw)
 
         # 准备数据格式
         X_train, y_train, scaler = myFunction.prepare_lstm_data(train_df)
@@ -73,7 +73,7 @@ def run_5fold_cv(df):
         )
         joblib.dump(scaler, scaler_path)
         print(f"训练集 X_train 形状: {X_train.shape}, y_train 形状: {y_train.shape}")
-        X_val, y_val, _ = myFunction.prepare_lstm_data(test_df, scaler=scaler)
+        X_val, y_val, _ = myFunction.prepare_lstm_data(val_df, scaler=scaler)
         print(f"验证集 X_val 形状: {X_val.shape}, y_val 形状: {y_val.shape}")
 
         # 模型训练
@@ -94,6 +94,8 @@ def run_5fold_cv(df):
         train_loader = DataLoader(
             EstrusDataset(X_train, y_train), batch_size, shuffle=True, drop_last=True
         )
+        val_loader = DataLoader(EstrusDataset(X_val, y_val), batch_size)
+
         num_epochs = train_info.num_epochs
         early_patience = train_info.early_patience
 
@@ -108,7 +110,7 @@ def run_5fold_cv(df):
 
         for epoch in range(num_epochs):
             model.train()
-            epoch_loss = 0.0
+            # epoch_loss = 0.0
             for batch_X, batch_y in train_loader:
                 batch_X, batch_y = batch_X.to(device), batch_y.to(device)
 
@@ -117,11 +119,12 @@ def run_5fold_cv(df):
                 loss = criterion(outputs, batch_y)
                 loss.backward()
                 optimizer.step()
-                epoch_loss += loss.item() * batch_X.size(0)
+                # epoch_loss += loss.item() * batch_X.size(0)
 
-            epoch_loss /= len(train_loader.dataset)
-            print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {epoch_loss:.4f}")
-
+            # epoch_loss /= len(train_loader.dataset)
+            # print(f"Epoch {epoch + 1}/{num_epochs}, Loss: {epoch_loss:.4f}")
+            val_metrics, _, _ = evaluate_model(model, val_loader, criterion, device)
+            epoch_loss = val_metrics["avg_loss"]
             scheduler.step(epoch_loss)
             early_stopping(epoch_loss, model)
             if early_stopping.early_stop:
@@ -129,7 +132,6 @@ def run_5fold_cv(df):
                 break
 
         # 训练结束后，加载该折保存的最佳模型权重进行评估
-        # 这样可以确保评估的是验证损失最低时的模型，而不是停止训练那一刻的模型
         model.load_state_dict(torch.load(best_model_path, weights_only=True))
         print(f"已加载最佳模型权重: {best_model_path}")
 
@@ -197,6 +199,7 @@ def run_5fold_cv_with_aug(df):
     )
 
     cv_all_exp_results = {}
+    all_detailed_results = []
 
     for config in configs:
         exp_name = config["name"]
@@ -206,6 +209,7 @@ def run_5fold_cv_with_aug(df):
         os.makedirs(cv_ablation_result_path, exist_ok=True)
 
         fold_metrics = []
+        fold_results_dict = {}
 
         for fold_idx, (train_df_raw, val_df_raw) in enumerate(folds):
             print(f"\n--- {exp_name} | Fold {fold_idx + 1} ---")
@@ -309,6 +313,10 @@ def run_5fold_cv_with_aug(df):
             final_rec.pop("avg_loss", None)
             final_rec.pop("MCC", None)
             fold_metrics.append(final_rec)
+            fold_results_dict[f"Fold_{fold_idx + 1}"] = final_rec
+            all_detailed_results.append(
+                {"Experiment": exp_name, "Fold": f"Fold_{fold_idx + 1}", **final_rec}
+            )
             print(f"Fold {fold_idx + 1} 结果: {final_rec}")
 
         # 计算该实验的5折平均
@@ -316,6 +324,16 @@ def run_5fold_cv_with_aug(df):
         for m_key in fold_metrics[0].keys():
             avg_exp_metrics[m_key] = np.mean([f[m_key] for f in fold_metrics])
 
+        # 参考 run_5fold_cv 的保存方式，为当前增强方式保存详细折结果汇总
+        exp_summary_df = pd.DataFrame(fold_results_dict).T
+        exp_summary_df.loc["Average"] = avg_exp_metrics
+        exp_summary_df.to_excel(
+            os.path.join(cv_ablation_result_path, f"{exp_name}_cv_summary.xlsx")
+        )
+
+        all_detailed_results.append(
+            {"Experiment": exp_name, "Fold": "Average", **avg_exp_metrics}
+        )
         cv_all_exp_results[exp_name] = avg_exp_metrics
         print(f"\n>>> 实验 {exp_name} 平均结果: {avg_exp_metrics}")
 
@@ -328,6 +346,12 @@ def run_5fold_cv_with_aug(df):
 
     # 保存到Excel
     summary_df.to_excel(os.path.join(saved_result_path, "final_summary.xlsx"))
+
+    # 将所有数据增强方式的验证集结果进行汇总保存在一张 Excel 表格中
+    all_detailed_df = pd.DataFrame(all_detailed_results)
+    all_detailed_df.to_excel(
+        os.path.join(saved_result_path, "all_experiments_cv_details.xlsx"), index=False
+    )
 
     return saved_result_path, configs
 
@@ -433,23 +457,14 @@ if __name__ == "__main__":
         index_col=False,
     )
 
+    # 测试集评估
     # 普通 5 折 CV
-    # cv_path = run_5fold_cv(df)
-    """ cv_path = os.path.join(result_save_path, "cv", "2026_0515_1517")
-    evaluate_independent_test_set(cv_path) """
+    cv_path = run_5fold_cv(df)
+    # cv_path = os.path.join(result_save_path, "cv", "2026_0515_1517")
+    evaluate_independent_test_set(cv_path)
 
     # 带有 8 种数据增强组合的消融实验
-    ablation_path, configs = run_5fold_cv_with_aug(df)
-    evaluate_independent_test_set(ablation_path, configs)
-
-
-"""
-文件 : 2026_0515_1517
-    验证集 CV 平均结果: 
-    {'Accuracy': np.float64(0.7773957367933271), 
-    'Precision': np.float64(0.7551127442306356), 
-    'Recall': np.float64(0.8177967914438502), 
-    'F1-Score': np.float64(0.7833576908839206), 
-    'AUC': np.float64(0.7780730449720461)}
-未进行数据增强操作
-"""
+    # ablation_path, configs = run_5fold_cv_with_aug(df)
+    """ ablation_path = os.path.join(result_save_path, "cv_ablation", "2026_0517_1345")
+    configs = ABLATION_CONFIGS
+    evaluate_independent_test_set(ablation_path, configs) """

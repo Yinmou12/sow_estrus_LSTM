@@ -614,7 +614,6 @@ def stratified_group_kfold(df, n_splits=5, test_ratio=0.2, random_state=123):
 
         folds.append((train_df, val_df))
 
-        # 打印当前折的划分结果
         e_train_count = np.sum(internal_labels[train_idx] == 1)
         n_train_count = np.sum(internal_labels[train_idx] == 0)
         e_val_count = np.sum(internal_labels[val_idx] == 1)
