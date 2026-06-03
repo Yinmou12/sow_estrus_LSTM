@@ -182,13 +182,16 @@ class DataAugInfo:
 
 
 # 数据增强
-def run_5fold_cv_with_aug(df):
+# 单耳温特征
+def run_5fold_cv_with_aug_temp(df):
     """
     运行5折交叉验证，包含8种数据增强组合的消融实验
     """
     independent_test_df, folds = myFunction.stratified_group_kfold(df, n_splits=5)
 
     configs = ABLATION_CONFIGS
+    train_info = TrainInfo()
+    data_aug_info = DataAugInfo()
 
     timestamp = datetime.now().strftime("%Y_%m%d_%H%M")
     saved_result_path = os.path.join(result_save_path, "cv_ablation", f"{timestamp}")
@@ -226,43 +229,41 @@ def run_5fold_cv_with_aug(df):
                 df_min = train_df_flat[train_df_flat["isEstrus"] == 1]
                 df_maj = train_df_flat[train_df_flat["isEstrus"] == 0]
                 train_df_flat = myFunction.ADASYN(
-                    threshold=0.5, gamma=1, df_min=df_min, df_maj=df_maj
+                    threshold=data_aug_info.ada_threshold,
+                    gamma=data_aug_info.ada_gamma,
+                    df_min=df_min,
+                    df_maj=df_maj,
                 )
 
             if config["S"]:
                 train_df_flat = myFunction.SMOTE(
-                    train_df_flat, amount_oversampling=800, k=7
+                    train_df_flat,
+                    amount_oversampling=data_aug_info.smote_amount_oversampling,
+                    k=data_aug_info.smote_k_neighbors,
                 )
 
             if config["T"]:
-                train_df_flat = myFunction.TomekLinked(train_df_flat, k=1)
+                train_df_flat = myFunction.TomekLinked(
+                    train_df_flat, k=data_aug_info.tomek_k
+                )
 
-            # 增加温度变化率特征
-            temp_feats = train_df_flat.iloc[:, 1:-1].copy()
-            rate_feats = temp_feats.diff(axis=1).fillna(0)
-            rate_feats.columns = [f"rate_{i}" for i in range(1, 49)]
-            # 合并：ID + 48温度 + 48变化率 + Label
-            train_final_df = pd.concat(
-                [train_df_flat.iloc[:, :-1], rate_feats, train_df_flat.iloc[:, -1]],
-                axis=1,
+            # 准备训练和验证数据 (仅使用耳温单特征)
+            X_train, y_train, scaler = myFunction.prepare_univariate_lstm_data(
+                train_df_flat
             )
-
-            # 准备训练和测试数据
-            X_train, y_train, scaler = myFunction.prepare_lstm_data(train_final_df)
             # 保存缩放器
             scaler_path = os.path.join(
                 cv_ablation_result_path, f"scaler_fold{fold_idx + 1}.joblib"
             )
             joblib.dump(scaler, scaler_path)
-            # 测试集也需要对应的变化率处理（prepare_lstm_data 内部逻辑会根据输入列数自动处理或需要手动构建）
-            # 这里为了保险，对测试集也进行相同的特征工程
-            X_val, y_val, _ = myFunction.prepare_lstm_data(val_df, scaler=scaler)
+            X_val, y_val, _ = myFunction.prepare_univariate_lstm_data(
+                val_df, scaler=scaler
+            )
 
             # 模型训练
-            train_info = TrainInfo()
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             model = EstrusLSTM(
-                input_size=train_info.input_size,
+                input_size=1,  # 仅使用单特征输入
                 hidden_size=train_info.layer_hidden_size,
                 use_cell_state=train_info.use_cell_state,
                 dropout_rate=train_info.dropout_rate,
@@ -356,7 +357,190 @@ def run_5fold_cv_with_aug(df):
     return saved_result_path, configs
 
 
-def evaluate_independent_test_set(base_path, configs=None):
+# 数据增强
+def run_5fold_cv_with_aug(df):
+    """
+    运行5折交叉验证，包含8种数据增强组合的消融实验
+    """
+    independent_test_df, folds = myFunction.stratified_group_kfold(df, n_splits=5)
+
+    configs = ABLATION_CONFIGS
+
+    timestamp = datetime.now().strftime("%Y_%m%d_%H%M")
+    saved_result_path = os.path.join(
+        result_save_path, "cv_ablation", "BF", f"{timestamp}"
+    )
+    os.makedirs(saved_result_path, exist_ok=True)
+
+    independent_test_df.to_excel(
+        os.path.join(saved_result_path, "independent_test_df.xlsx"), index=False
+    )
+
+    cv_all_exp_results = {}
+    all_detailed_results = []
+
+    for config in configs:
+        exp_name = config["name"]
+        print(f"\n开始消融实验: {exp_name} " + "*" * 30)
+
+        cv_ablation_result_path = os.path.join(saved_result_path, exp_name)
+        os.makedirs(cv_ablation_result_path, exist_ok=True)
+
+        fold_metrics = []
+        fold_results_dict = {}
+
+        for fold_idx, (train_df_raw, val_df_raw) in enumerate(folds):
+            print(f"\n--- {exp_name} | Fold {fold_idx + 1} ---")
+
+            # 基础预处理
+            train_df = myFunction.fill_data(train_df_raw, balanced_data=False, stride=6)
+            print("+" * 60)
+            val_df = myFunction.fill_data(val_df_raw, balanced_data=False, stride=6)
+
+            # 数据增强 (仅针对训练集)
+            # 先转换为特征矩阵格式以便增强函数处理
+            train_df_flat = myFunction.convert_features(train_df)
+
+            if config["A"]:
+                df_min = train_df_flat[train_df_flat["isEstrus"] == 1]
+                df_maj = train_df_flat[train_df_flat["isEstrus"] == 0]
+                train_df_flat = myFunction.ADASYN(
+                    threshold=0.5, gamma=1, df_min=df_min, df_maj=df_maj
+                )
+                print(
+                    f"ADASYN后样本总数:{train_df_flat['isEstrus'].shape[0]}, 正样本数:{train_df_flat[train_df_flat['isEstrus'] == 1].shape[0]}, 负样本数:{train_df_flat[train_df_flat['isEstrus'] == 0].shape[0]}"
+                )
+
+            if config["S"]:
+                train_df_flat = myFunction.SMOTE(
+                    train_df_flat, amount_oversampling=800, k=7
+                )
+                print(
+                    f"SMOTE后样本总数:{train_df_flat['isEstrus'].shape[0]}, 正样本数:{train_df_flat[train_df_flat['isEstrus'] == 1].shape[0]}, 负样本数:{train_df_flat[train_df_flat['isEstrus'] == 0].shape[0]}"
+                )
+
+            if config["T"]:
+                train_df_flat = myFunction.TomekLinked(train_df_flat, k=1)
+
+            # 增加温度变化率特征
+            temp_feats = train_df_flat.iloc[:, 1:-1].copy()
+            rate_feats = temp_feats.diff(axis=1).fillna(0)
+            rate_feats.columns = [f"rate_{i}" for i in range(1, 49)]
+            # 合并：ID + 48温度 + 48变化率 + Label
+            train_final_df = pd.concat(
+                [train_df_flat.iloc[:, :-1], rate_feats, train_df_flat.iloc[:, -1]],
+                axis=1,
+            )
+
+            # 准备训练和测试数据
+            X_train, y_train, scaler = myFunction.prepare_lstm_data(train_final_df)
+            # 保存缩放器
+            scaler_path = os.path.join(
+                cv_ablation_result_path, f"scaler_fold{fold_idx + 1}.joblib"
+            )
+            joblib.dump(scaler, scaler_path)
+
+            X_val, y_val, _ = myFunction.prepare_lstm_data(val_df, scaler=scaler)
+
+            # 模型训练
+            train_info = TrainInfo()
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            model = EstrusLSTM(
+                input_size=train_info.input_size,
+                hidden_size=train_info.layer_hidden_size,
+                use_cell_state=train_info.use_cell_state,
+                dropout_rate=train_info.dropout_rate,
+            ).to(device)
+
+            criterion = nn.BCELoss()
+            optimizer = torch.optim.Adam(
+                model.parameters(), lr=train_info.learning_rate, weight_decay=1e-4
+            )
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode="min", factor=0.5, patience=train_info.lr_patience
+            )
+
+            train_loader = DataLoader(
+                EstrusDataset(X_train, y_train),
+                train_info.batch_size,
+                shuffle=True,
+                drop_last=True,
+            )
+            val_loader = DataLoader(EstrusDataset(X_val, y_val), train_info.batch_size)
+
+            best_model_path = os.path.join(
+                cv_ablation_result_path, f"best_model_fold{fold_idx + 1}.pth"
+            )
+            early_stopping = EarlyStopping(
+                patience=train_info.early_patience, verbose=False, path=best_model_path
+            )
+
+            for epoch in range(train_info.num_epochs):
+                model.train()
+                for batch_X, batch_y in train_loader:
+                    batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+                    optimizer.zero_grad()
+                    loss = criterion(model(batch_X), batch_y)
+                    loss.backward()
+                    optimizer.step()
+
+                # 评估
+                val_metrics, _, _ = evaluate_model(model, val_loader, criterion, device)
+                scheduler.step(val_metrics["avg_loss"])
+                early_stopping(val_metrics["avg_loss"], model)
+                if early_stopping.early_stop:
+                    break
+
+            # 6. 加载最佳并记录
+            model.load_state_dict(torch.load(best_model_path, weights_only=True))
+            final_rec, _, _ = evaluate_model(model, val_loader, criterion, device)
+            final_rec.pop("avg_loss", None)
+            # final_rec.pop("MCC", None)
+            fold_metrics.append(final_rec)
+            fold_results_dict[f"Fold_{fold_idx + 1}"] = final_rec
+            all_detailed_results.append(
+                {"Experiment": exp_name, "Fold": f"Fold_{fold_idx + 1}", **final_rec}
+            )
+            print(f"Fold {fold_idx + 1} 结果: {final_rec}")
+
+        # 计算该实验的5折平均
+        avg_exp_metrics = {}
+        for m_key in fold_metrics[0].keys():
+            avg_exp_metrics[m_key] = np.mean([f[m_key] for f in fold_metrics])
+
+        # 参考 run_5fold_cv 的保存方式，为当前增强方式保存详细折结果汇总
+        exp_summary_df = pd.DataFrame(fold_results_dict).T
+        exp_summary_df.loc["Average"] = avg_exp_metrics
+        exp_summary_df.to_excel(
+            os.path.join(cv_ablation_result_path, f"{exp_name}_cv_summary.xlsx")
+        )
+
+        all_detailed_results.append(
+            {"Experiment": exp_name, "Fold": "Average", **avg_exp_metrics}
+        )
+        cv_all_exp_results[exp_name] = avg_exp_metrics
+        print(f"\n>>> 实验 {exp_name} 平均结果: {avg_exp_metrics}")
+
+    # 汇总打印所有实验
+    print("\n" + "=" * 50)
+    print("消融实验 5-Fold CV 最终汇总结果")
+    print("=" * 50)
+    summary_df = pd.DataFrame(cv_all_exp_results).T
+    print(summary_df)
+
+    # 保存到Excel
+    summary_df.to_excel(os.path.join(saved_result_path, "final_summary.xlsx"))
+
+    # 将所有数据增强方式的验证集结果进行汇总保存在一张 Excel 表格中
+    all_detailed_df = pd.DataFrame(all_detailed_results)
+    all_detailed_df.to_excel(
+        os.path.join(saved_result_path, "all_experiments_cv_details.xlsx"), index=False
+    )
+
+    return saved_result_path, configs
+
+
+def evaluate_independent_test_set(base_path, configs=None, input_size=1):
     """
     加载交叉验证中保存的最佳模型和缩放器，并在独立测试集上进行最终评估。
     """
@@ -371,9 +555,20 @@ def evaluate_independent_test_set(base_path, configs=None):
         return
 
     independent_test_df = pd.read_excel(df_path)
+    all_sows = independent_test_df["sSowsNo"].unique()
+    estrus_sows = independent_test_df[independent_test_df["isEstrus"] == 1][
+        "sSowsNo"
+    ].unique()
+    not_estrus_sows = [s for s in all_sows if s not in estrus_sows]
+    print(f"发情母猪个数: {len(estrus_sows)}, 非发情母猪个数: {len(not_estrus_sows)}")
 
     # 基础预处理
-    test_df_filled = myFunction.fill_data(independent_test_df)
+    test_df_filled = myFunction.fill_data(
+        independent_test_df, balanced_data=False, stride=6
+    )
+    """ test_df_filled = myFunction.fill_data(
+        independent_test_df, balanced_data=True, stride=12
+    ) """
 
     final_test_results = {}
     train_info = TrainInfo()
@@ -408,7 +603,7 @@ def evaluate_independent_test_set(base_path, configs=None):
 
             # 加载模型和缩放器
             model = EstrusLSTM(
-                input_size=train_info.input_size,
+                input_size=input_size,  # 使用传入的 input_size
                 hidden_size=train_info.layer_hidden_size,
                 use_cell_state=train_info.use_cell_state,
                 dropout_rate=train_info.dropout_rate,
@@ -417,16 +612,27 @@ def evaluate_independent_test_set(base_path, configs=None):
             scaler = joblib.load(scaler_path)
 
             # 准备数据并评估
-            X_test, y_test, _ = myFunction.prepare_lstm_data(
-                test_df_filled, scaler=scaler
+            if input_size == 1:
+                # 单特征评估使用 univariate 准备函数
+                X_test, y_test, _ = myFunction.prepare_univariate_lstm_data(
+                    test_df_filled, scaler=scaler
+                )
+            else:
+                X_test, y_test, _ = myFunction.prepare_lstm_data(
+                    test_df_filled, scaler=scaler
+                )
+
+            print(
+                f"独立测试集 X_test 形状: {X_test.shape}, y_test 形状: {y_test.shape}"
             )
+            print(f"正样本数: {(y_test == 1).sum()}, 负样本数: {(y_test == 0).sum()}")
             loader = DataLoader(
                 EstrusDataset(X_test, y_test), train_info.batch_size, shuffle=False
             )
 
             metrics, _, _ = evaluate_model(model, loader, criterion, device)
             metrics.pop("avg_loss", None)
-            metrics.pop("MCC", None)
+            # metrics.pop("MCC", None)
             fold_metrics_list.append(metrics)
 
         if fold_metrics_list:
@@ -440,7 +646,7 @@ def evaluate_independent_test_set(base_path, configs=None):
 
     if final_test_results:
         summary_df = pd.DataFrame(final_test_results).T
-        save_path = os.path.join(base_path, "independent_test_summary.xlsx")
+        save_path = os.path.join(f"{base_path}_evaluate", "BF_temp.xlsx")
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         summary_df.to_excel(save_path)
         print(f"\n独立测试集评估完成，汇总已保存至: {save_path}")
@@ -459,12 +665,21 @@ if __name__ == "__main__":
 
     # 测试集评估
     # 普通 5 折 CV
-    cv_path = run_5fold_cv(df)
+    # cv_path = run_5fold_cv(df)
     # cv_path = os.path.join(result_save_path, "cv", "2026_0515_1517")
-    evaluate_independent_test_set(cv_path)
+    # evaluate_independent_test_set(cv_path)
 
-    # 带有 8 种数据增强组合的消融实验
-    # ablation_path, configs = run_5fold_cv_with_aug(df)
-    """ ablation_path = os.path.join(result_save_path, "cv_ablation", "2026_0517_1345")
-    configs = ABLATION_CONFIGS
-    evaluate_independent_test_set(ablation_path, configs) """
+    """
+    带有 8 种数据增强组合的消融实验
+    """
+    # 单体温
+    # ablation_path, configs = run_5fold_cv_with_aug_temp(df)
+    # ablation_path = os.path.join(result_save_path, "cv_ablation", "2026_0522_0737")
+    # configs = ABLATION_CONFIGS
+    # evaluate_independent_test_set(ablation_path, configs, input_size=1)
+
+    # 体温 + 体温变化率
+    ablation_path, configs = run_5fold_cv_with_aug(df)
+    # ablation_path = os.path.join(result_save_path, "cv_ablation", "2026_0517_1345")
+    # configs = ABLATION_CONFIGS
+    evaluate_independent_test_set(ablation_path, configs, input_size=2)

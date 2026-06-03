@@ -3,72 +3,65 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-"""class EstrusLSTM(nn.Module):
-    def __init__(self, input_size=1, hidden_size=64, num_layers=2, dropout=0.2):
-        super(EstrusLSTM, self).__init__()
 
-        # LSTM核心层
-        # batch_first=True 适配 (batch, seq_len, input_size) 的数据格式
-        self.lstm = nn.LSTM(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout=dropout if num_layers > 1 else 0,
+def _resolve_hidden_sizes(hidden_size=128, num_layers=4, hidden_sizes=None):
+    if hidden_sizes is None and isinstance(hidden_size, (list, tuple)):
+        hidden_sizes = hidden_size
+
+    if hidden_sizes is None:
+        return [int(hidden_size)] * int(num_layers)
+
+    resolved = [int(size) for size in hidden_sizes]
+    if not resolved:
+        raise ValueError("hidden_sizes must contain at least one layer size")
+    return resolved
+
+
+class LayerWiseBiLSTM(nn.Module):
+    """Stack one-layer LSTMs so each layer can have its own hidden size."""
+
+    def __init__(
+        self,
+        input_size=1,
+        hidden_size=128,
+        num_layers=4,
+        dropout_rate=0.2,
+        bidirectional=True,
+        hidden_sizes=None,
+    ):
+        super().__init__()
+        self.hidden_sizes = _resolve_hidden_sizes(hidden_size, num_layers, hidden_sizes)
+        self.bidirectional = bidirectional
+        self.num_directions = 2 if bidirectional else 1
+
+        layers = []
+        layer_input_size = input_size
+        for layer_hidden_size in self.hidden_sizes:
+            layers.append(
+                nn.LSTM(
+                    input_size=layer_input_size,
+                    hidden_size=layer_hidden_size,
+                    num_layers=1,
+                    batch_first=True,
+                    bidirectional=bidirectional,
+                )
+            )
+            layer_input_size = layer_hidden_size * self.num_directions
+
+        self.layers = nn.ModuleList(layers)
+        self.dropouts = nn.ModuleList(
+            [nn.Dropout(dropout_rate) for _ in range(max(0, len(layers) - 1))]
         )
-
-        # 批归一化层，稳定梯度
-        self.bn = nn.LayerNorm(hidden_size)
-        # Dropout层，防止过拟合
-        self.dropout = nn.Dropout(dropout)
-        # 全连接层，进行分类映射
-        self.fc1 = nn.Linear(hidden_size, 16)
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(16, 1)
-        # Sigmoid激活函数，输出概率值
-        self.sigmoid = nn.Sigmoid()
+        self.output_size = self.hidden_sizes[-1] * self.num_directions
 
     def forward(self, x):
-        # X 形状: (batch, 48, 1)
-
-        # LSTM 的输出: out 是所有时间步的隐藏状态, (h_n, c_n) 是最后一步的状态
-        out, (h_n, c_n) = self.lstm(x)
-
-        # 只取序列中最后一个时间步的特征进行分类
-        # out[:, -1, :] 形状为 (batch, hidden_size)
-        feature = out[:, -1, :]
-
-        # 进入全连接网络
-        x = self.bn(feature)
-        x = self.dropout(x)
-        x = self.fc1(x)
-        x = self.relu(x)
-        x = self.fc2(x)
-
-        return self.sigmoid(x)"""
-
-
-"""class EstrusLSTM(nn.Module):
-    def __init__(self, input_size=1, hidden_size=128, num_layers=3, dropout=0.2):
-        super(EstrusLSTM, self).__init__()
-
-        self.lstm = nn.LSTM(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True,
-            dropout=dropout if num_layers > 1 else 0,
-        )
-        self.fc1 = nn.Linear(hidden_size, 32)
-        self.fc2 = nn.Linear(32, 1)
-        self.relu = nn.ReLU()
-
-    def forward(self, x):
-        out, (h_n, c_n) = self.lstm(x)
-        feature = out[:, -1, :]
-        x = self.relu(self.fc1(feature))
-        x = torch.sigmoid(self.fc2(x))
-        return x"""
+        out = x
+        last_state = None
+        for layer_idx, lstm in enumerate(self.layers):
+            out, last_state = lstm(out)
+            if layer_idx < len(self.dropouts):
+                out = self.dropouts[layer_idx](out)
+        return out, last_state
 
 
 class EstrusLSTM(nn.Module):
@@ -77,163 +70,310 @@ class EstrusLSTM(nn.Module):
         input_size=1,
         hidden_size=128,
         num_layers=4,
+        hidden_sizes=None,
         dropout_rate=0.2,
+        dropout=None,
         use_cell_state=True,
+        feature_mode="h_n_state",
+        bidirectional=True,
     ):
-        super(EstrusLSTM, self).__init__()
+        super().__init__()
+
+        if dropout is not None:
+            dropout_rate = dropout
 
         self.use_cell_state = use_cell_state
+        self.feature_mode = feature_mode
+        self.bidirectional = bidirectional
 
-        self.lstm = nn.LSTM(
+        self.encoder = LayerWiseBiLSTM(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
-            batch_first=True,
-            dropout=dropout_rate if num_layers > 1 else 0,
-            bidirectional=True,  # 双向LSTM
+            hidden_sizes=hidden_sizes,
+            dropout_rate=dropout_rate,
+            bidirectional=bidirectional,
         )
-        # 双向LSTM的输出维度是 2*hidden_size
-        feat_dim = 4 * hidden_size if use_cell_state else 2 * hidden_size
+        self.lstm_layers = self.encoder.layers
+        self.hidden_sizes = self.encoder.hidden_sizes
+        feature_size = self.encoder.output_size
+
+        if self.feature_mode == "h_n_state":
+            feat_dim = feature_size * 2 if self.use_cell_state else feature_size
+        elif self.feature_mode in ["last_out", "mean_out"]:
+            feat_dim = feature_size
+        else:
+            raise ValueError(f"Unknown feature_mode: {feature_mode}")
+
+        self.layer_norm = nn.LayerNorm(feat_dim)
         self.fc1 = nn.Linear(feat_dim, 32)
         self.fc2 = nn.Linear(32, 1)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout_rate)
-        self.layer_norm = nn.LayerNorm(feat_dim)
+
+    def _last_state_feature(self, h_n, c_n):
+        if self.bidirectional:
+            h_last = torch.cat([h_n[-2, :, :], h_n[-1, :, :]], dim=1)
+            if not self.use_cell_state:
+                return h_last
+            c_last = torch.cat([c_n[-2, :, :], c_n[-1, :, :]], dim=1)
+            return torch.cat([h_last, c_last], dim=1)
+
+        h_last = h_n[-1, :, :]
+        if not self.use_cell_state:
+            return h_last
+        c_last = c_n[-1, :, :]
+        return torch.cat([h_last, c_last], dim=1)
 
     def forward(self, x):
-        out, (h_n, c_n) = self.lstm(x)
-        # 提取最后两层（即第3层的正向和反向）的隐藏状态
-        # h_n[-2,:,:] 是最后一层的正向状态
-        # h_n[-1,:,:] 是最后一层的反向状态
-        h_forward = h_n[-2, :, :]
-        h_backward = h_n[-1, :, :]
-        if self.use_cell_state:
-            c_forward = c_n[-2, :, :]
-            c_backward = c_n[-1, :, :]
-            feature = torch.cat([h_forward, h_backward, c_forward, c_backward], dim=1)
+        out, (h_n, c_n) = self.encoder(x)
+
+        if self.feature_mode == "h_n_state":
+            feature = self._last_state_feature(h_n, c_n)
+        elif self.feature_mode == "last_out":
+            feature = out[:, -1, :]
+        elif self.feature_mode == "mean_out":
+            feature = torch.mean(out, dim=1)
         else:
-            feature = torch.cat([h_forward, h_backward], dim=1)
+            raise ValueError(f"Unknown feature_mode: {self.feature_mode}")
 
         out = self.layer_norm(feature)
         out = self.relu(self.fc1(out))
         out = self.dropout(out)
-        out = torch.sigmoid(self.fc2(out))
-        return out
+        return torch.sigmoid(self.fc2(out))
 
 
-class Attention(nn.Module):
-    def __init__(self, hidden_size):
-        super(Attention, self).__init__()
-        # 线性层用于计算注意力得分
-        self.attn = nn.Linear(hidden_size, hidden_size)
-        # 上下文变量，用于衡量每个时间步的重要性
-        self.v = nn.Linear(hidden_size, 1, bias=False)
+class DotProductAttention(nn.Module):
+    """Dot-product attention for pooling. Faster and uses fewer parameters than Additive Attention."""
+
+    def __init__(self, input_dim):
+        super().__init__()
+        # A learnable query vector that represents the "optimal" feature for estrus detection
+        self.query = nn.Parameter(torch.randn(input_dim))
 
     def forward(self, lstm_output):
-        # lstm_output 形状: (batch, seq_len, hidden_size)
+        # lstm_output: (batch, seq_len, input_dim)
+        # scores: (batch, seq_len) - measure similarity between query and each time step
+        scores = torch.matmul(lstm_output, self.query)
+        weights = F.softmax(scores, dim=1)
+        # context_vector: (batch, input_dim)
+        context_vector = torch.sum(weights.unsqueeze(-1) * lstm_output, dim=1)
+        return context_vector, weights
 
-        # 计算能量值 (Energy)
+
+class ScaledDotProductAttention(nn.Module):
+    """Scaled Dot-product attention (Transformer style) to maintain gradient stability."""
+
+    def __init__(self, input_dim):
+        super().__init__()
+        self.query = nn.Parameter(torch.randn(input_dim))
+        self.scale = np.sqrt(input_dim)
+
+    def forward(self, lstm_output):
+        # scores: (batch, seq_len)
+        scores = torch.matmul(lstm_output, self.query) / self.scale
+        weights = F.softmax(scores, dim=1)
+        context_vector = torch.sum(weights.unsqueeze(-1) * lstm_output, dim=1)
+        return context_vector, weights
+
+
+class EstrusLSTM_DotProductAttn(nn.Module):
+    """Comparison model using Dot-Product Attention."""
+
+    def __init__(
+        self,
+        input_size=1,
+        hidden_size=128,
+        num_layers=3,
+        hidden_sizes=None,
+        dropout_rate=0.2,
+        bidirectional=True,
+    ):
+        super().__init__()
+        self.encoder = LayerWiseBiLSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            hidden_sizes=hidden_sizes,
+            dropout_rate=dropout_rate,
+            bidirectional=bidirectional,
+        )
+        feature_size = self.encoder.output_size
+        self.attention = DotProductAttention(feature_size)
+        self.layer_norm = nn.LayerNorm(feature_size)
+        self.fc1 = nn.Linear(feature_size, 32)
+        self.fc2 = nn.Linear(32, 1)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout_rate)
+
+    def forward(self, x):
+        lstm_out, _ = self.encoder(x)
+        attn_output, _ = self.attention(lstm_out)
+        out = self.layer_norm(attn_output)
+        out = self.relu(self.fc1(out))
+        out = self.dropout(out)
+        return torch.sigmoid(self.fc2(out))
+
+
+class EstrusLSTM_ScaledDotProductAttn(nn.Module):
+    """Comparison model using Scaled Dot-Product Attention."""
+
+    def __init__(
+        self,
+        input_size=1,
+        hidden_size=128,
+        num_layers=3,
+        hidden_sizes=None,
+        dropout_rate=0.2,
+        bidirectional=True,
+    ):
+        super().__init__()
+        self.encoder = LayerWiseBiLSTM(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            hidden_sizes=hidden_sizes,
+            dropout_rate=dropout_rate,
+            bidirectional=bidirectional,
+        )
+        feature_size = self.encoder.output_size
+        self.attention = ScaledDotProductAttention(feature_size)
+        self.layer_norm = nn.LayerNorm(feature_size)
+        self.fc1 = nn.Linear(feature_size, 32)
+        self.fc2 = nn.Linear(32, 1)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout_rate)
+
+    def forward(self, x):
+        lstm_out, _ = self.encoder(x)
+        attn_output, _ = self.attention(lstm_out)
+        out = self.layer_norm(attn_output)
+        out = self.relu(self.fc1(out))
+        out = self.dropout(out)
+        return torch.sigmoid(self.fc2(out))
+
+
+class TemporalAttention(nn.Module):
+    """Additive attention over the LSTM time steps."""
+
+    def __init__(self, input_dim, attention_dim=None):
+        super().__init__()
+        attention_dim = attention_dim or input_dim
+        self.attn = nn.Linear(input_dim, attention_dim)
+        self.v = nn.Linear(attention_dim, 1, bias=False)
+
+    def forward(self, lstm_output):
         energy = torch.tanh(self.attn(lstm_output))
-        # 计算权重得分
         weights = F.softmax(self.v(energy), dim=1)
-
-        # 计算加权后的上下文向量 (Context Vector)
-        # (batch, seq_len, 1) * (batch, seq_len, hidden_size) -> 并在 seq_len 维度求和
         context_vector = torch.sum(weights * lstm_output, dim=1)
         return context_vector, weights
 
 
-class EstrusLSTM_Attn(nn.Module):
-    def __init__(self, input_size=1, hidden_size=128, num_layers=3, dropout_rate=0.2):
-        super(EstrusLSTM_Attn, self).__init__()
+class Attention(TemporalAttention):
+    """Backward-compatible alias for existing imports."""
 
-        self.lstm = nn.LSTM(
+    def __init__(self, hidden_size):
+        super().__init__(hidden_size)
+
+
+class EstrusLSTM_Attn(nn.Module):
+    def __init__(
+        self,
+        input_size=1,
+        hidden_size=128,
+        num_layers=3,
+        hidden_sizes=None,
+        dropout_rate=0.2,
+        dropout=None,
+        bidirectional=True,
+    ):
+        super().__init__()
+
+        if dropout is not None:
+            dropout_rate = dropout
+
+        self.encoder = LayerWiseBiLSTM(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
-            batch_first=True,
-            dropout=dropout_rate if num_layers > 1 else 0,
-            bidirectional=True,  # 双向LSTM
+            hidden_sizes=hidden_sizes,
+            dropout_rate=dropout_rate,
+            bidirectional=bidirectional,
         )
-        # 注意力层
-        self.attention = Attention(hidden_size * 2)
-        # 双向LSTM的输出维度是 2*hidden_size
-        self.fc1 = nn.Linear(2 * hidden_size, 32)
+        self.lstm_layers = self.encoder.layers
+        self.hidden_sizes = self.encoder.hidden_sizes
+        feature_size = self.encoder.output_size
+
+        self.attention = TemporalAttention(feature_size)
+        self.layer_norm = nn.LayerNorm(feature_size)
+        self.fc1 = nn.Linear(feature_size, 32)
         self.fc2 = nn.Linear(32, 1)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout_rate)
-        self.batch_norm = nn.LayerNorm(2 * hidden_size)
 
     def forward(self, x):
-        out, (h_n, c_n) = self.lstm(x)
-        # 提取最后两层（即第3层的正向和反向）的隐藏状态
-        # h_n[-2,:,:] 是最后一层的正向状态
-        # h_n[-1,:,:] 是最后一层的反向状态
-        """feature = torch.cat(
-            (h_n[-2, :, :], h_n[-1, :, :]), dim=1
-        )  # 形状: (batch, 2*hidden_size)
-        out = self.batch_norm(feature)"""
-
-        attn_output, attn_weights = self.attention(out)
-        out = self.batch_norm(attn_output)
+        lstm_out, _ = self.encoder(x)
+        attn_output, _ = self.attention(lstm_out)
+        out = self.layer_norm(attn_output)
         out = self.relu(self.fc1(out))
         out = self.dropout(out)
-        out = torch.sigmoid(self.fc2(out))
-        return out
+        return torch.sigmoid(self.fc2(out))
 
 
 class EstrusLSTM_MultiHeadAttn(nn.Module):
     def __init__(
-        self, input_size=2, hidden_size=128, num_layers=2, num_heads=4, dropout_rate=0.2
+        self,
+        input_size=2,
+        hidden_size=128,
+        num_layers=2,
+        hidden_sizes=None,
+        num_heads=4,
+        dropout_rate=0.2,
+        dropout=None,
+        bidirectional=True,
     ):
-        super(EstrusLSTM_MultiHeadAttn, self).__init__()
+        super().__init__()
 
-        self.lstm = nn.LSTM(
+        if dropout is not None:
+            dropout_rate = dropout
+
+        self.encoder = LayerWiseBiLSTM(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
-            batch_first=True,
-            dropout=dropout_rate if num_layers > 1 else 0,
-            bidirectional=True,  # 双向LSTM
+            hidden_sizes=hidden_sizes,
+            dropout_rate=dropout_rate,
+            bidirectional=bidirectional,
         )
+        self.lstm_layers = self.encoder.layers
+        self.hidden_sizes = self.encoder.hidden_sizes
+        feature_size = self.encoder.output_size
 
-        # 多头注意力层，embed_dim 为双向LSTM的输出维度 (2 * hidden_size)
         self.multihead_attn = nn.MultiheadAttention(
-            embed_dim=2 * hidden_size,
+            embed_dim=feature_size,
             num_heads=num_heads,
             dropout=dropout_rate,
-            batch_first=True,  # 确保 batch 在第 0 维
+            batch_first=True,
         )
-
-        self.batch_norm = nn.LayerNorm(2 * hidden_size)
-        self.fc1 = nn.Linear(2 * hidden_size, 32)
+        self.layer_norm = nn.LayerNorm(feature_size)
+        self.fc1 = nn.Linear(feature_size, 32)
         self.fc2 = nn.Linear(32, 1)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout_rate)
 
     def forward(self, x):
-        # lstm_out 形状: (batch, seq_len, 2 * hidden_size)
-        lstm_out, (h_n, c_n) = self.lstm(x)
-
-        # 自注意力机制：Query, Key, Value 均使用 lstm_out
-        attn_output, attn_weights = self.multihead_attn(lstm_out, lstm_out, lstm_out)
-
-        # 对序列维度求平均，得到单个上下文向量作为分类特征
-        context_vector = torch.mean(
-            attn_output, dim=1
-        )  # 形状: (batch, 2 * hidden_size)
-
-        out = self.batch_norm(context_vector)
+        lstm_out, _ = self.encoder(x)
+        attn_output, _ = self.multihead_attn(lstm_out, lstm_out, lstm_out)
+        context_vector = torch.mean(attn_output, dim=1)
+        out = self.layer_norm(context_vector)
         out = self.relu(self.fc1(out))
         out = self.dropout(out)
-        out = torch.sigmoid(self.fc2(out))
-
-        return out
+        return torch.sigmoid(self.fc2(out))
 
 
 class EstrusGRU(nn.Module):
     def __init__(self, input_size=1, hidden_size=128, num_layers=3, dropout=0.2):
-        super(EstrusGRU, self).__init__()
+        super().__init__()
 
         self.gru = nn.GRU(
             input_size=input_size,
@@ -247,16 +387,15 @@ class EstrusGRU(nn.Module):
         self.fc2 = nn.Linear(32, 1)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout)
-        self.batch_norm = nn.LayerNorm(hidden_size * 2)
+        self.layer_norm = nn.LayerNorm(hidden_size * 2)
 
     def forward(self, x):
-        out, h_n = self.gru(x)
+        _, h_n = self.gru(x)
         feature = torch.cat((h_n[-2, :, :], h_n[-1, :, :]), dim=1)
-        out = self.batch_norm(feature)
+        out = self.layer_norm(feature)
         out = self.relu(self.fc1(out))
         out = self.dropout(out)
-        out = torch.sigmoid(self.fc2(out))
-        return out
+        return torch.sigmoid(self.fc2(out))
 
 
 class EarlyStopping:
@@ -268,14 +407,6 @@ class EarlyStopping:
         monitor="val_loss",
         path="best_model.pth",
     ):
-        """
-        Args:
-            patience (int): 忍受多少个 epoch 没有进步
-            verbose (bool): 是否打印信息
-            delta (float): 指标改善的最小阈值
-            path (str): 最佳模型保存路径
-            monitor (str): 监控的指标 ('val_loss' 或 'val_f1')
-        """
         self.patience = patience
         self.verbose = verbose
         self.counter = 0

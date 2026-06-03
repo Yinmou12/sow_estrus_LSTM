@@ -674,7 +674,7 @@ def function_filled(data: pd.DataFrame):
     return record_dataset
 
 
-def fill_data(data: pd.DataFrame, balanced_data=True, stride=12):
+def fill_data(data: pd.DataFrame, balanced_data=True, stride=6):
     final_dataset = pd.DataFrame()
 
     estrus_sows = data[data["isEstrus"] == 1]["sSowsNo"].unique()
@@ -684,6 +684,7 @@ def fill_data(data: pd.DataFrame, balanced_data=True, stride=12):
     estrus_dataset = pd.DataFrame()
     notEstrus_dataset = pd.DataFrame()
 
+    temp_record_drop = []
     for earCode in estrus_sows:
         sub_df = data[data["sSowsNo"] == earCode].sort_values("tLastUploadTime")
         if len(sub_df) >= 44:
@@ -691,6 +692,10 @@ def fill_data(data: pd.DataFrame, balanced_data=True, stride=12):
             estrus_dataset = pd.concat(
                 [estrus_dataset, filled_df], axis=0, ignore_index=True
             )
+        else:
+            temp_record_drop.append(earCode)
+    print(f"以下发情样本由于数据不足被丢弃 (共 {len(temp_record_drop)} 个):")
+    print(f"{temp_record_drop}")
 
     skipped_constant_windows = []
     # 发情母猪个数与非发情母猪个数的比例
@@ -728,7 +733,16 @@ def fill_data(data: pd.DataFrame, balanced_data=True, stride=12):
         elif balanced_data == False:
             # 每头非发情母猪取多个数据 -- 每间隔stride时间步取一段数据
             attempts = 0
+            # 不平衡比例
+            """ unbalance_ratio = 2
+            each_count = max(
+                1, int(len(estrus_sows) * unbalance_ratio / len(not_estrus_sows)) + 1
+            ) """
             for start_idx in range(0, total_len - WINDOW_SIZE + 1, stride):
+                # 每头非发情母猪最多取 each_count 个
+                """if attempts >= each_count:
+                break"""
+
                 window_df = sub_df.iloc[start_idx : start_idx + WINDOW_SIZE].copy()
                 # 判断是否已经全部是同样的耳温值
                 if window_df["iTemperature"].nunique() == 1:
@@ -946,6 +960,7 @@ def plot_training_history(history, save_path=None):
         ("accuracy", ["val_accuracy"], ["g"], "Validation Accuracy"),
         ("precision", ["val_precision"], ["c"], "Validation Precision"),
         ("recall", ["val_recall"], ["y"], "Validation Recall"),
+        ("specificity", ["val_specificity"], ["orange"], "Validation Specificity"),
         ("f1_score", ["val_f1"], ["m"], "Validation F1 Score"),
         ("auc", ["val_auc"], ["k"], "Validation AUC"),
     ]
@@ -1014,12 +1029,14 @@ def plot_matrix(y_true, y_pred, save_dir=None):
     accuracy = accuracy_score(y_true, y_pred) * 100
     precision = precision_score(y_true, y_pred) * 100
     recall = recall_score(y_true, y_pred) * 100
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
+    specificity = tn / (tn + fp) * 100 if (tn + fp) > 0 else 0
     f1 = f1_score(y_true, y_pred) * 100
     auc = roc_auc_score(y_true, y_pred) * 100
     mcc = matthews_corrcoef(y_true, y_pred) * 100
 
-    metrics_name = ["Accuracy", "Precision", "Recall", "F1 Score", "AUC"]
-    metrics_values = [accuracy, precision, recall, f1, auc]
+    metrics_name = ["Accuracy", "Precision", "Recall", "Specificity", "F1 Score", "AUC"]
+    metrics_values = [accuracy, precision, recall, specificity, f1, auc]
     plt.figure(figsize=(10, 6))
     bars = plt.bar(
         metrics_name,
@@ -1056,6 +1073,7 @@ def plot_matrix(y_true, y_pred, save_dir=None):
     print(f"测试集准确率 (Accuracy): {accuracy:.4f}")
     print(f"测试集精确率 (Precision): {precision:.4f}")
     print(f"测试集召回率 (Recall): {recall:.4f}")
+    print(f"测试集特异度 (Specificity): {specificity:.4f}")
     print(f"测试集 F1 分数: {f1:.4f}")
     print(f"测试集 AUC 指标: {auc:.4f}")
     print(f"测试集 MCC : {mcc}:.4f")

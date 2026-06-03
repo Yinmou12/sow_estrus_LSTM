@@ -19,6 +19,7 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 from sklearn.metrics import (
+    confusion_matrix,
     accuracy_score,
     precision_score,
     recall_score,
@@ -321,7 +322,7 @@ def build_scheduler(
 
 def evaluate_model(
     model: nn.Module, loader: DataLoader, criterion: nn.Module, device: torch.device
-) -> Tuple[float, float, float, float, float, float]:
+) -> Tuple[float, float, float, float, float, float, float, float]:
     """评估模型性能"""
     model.eval()
     total_loss = 0
@@ -349,11 +350,13 @@ def evaluate_model(
     accuracy = accuracy_score(all_labels, all_preds)
     precision = precision_score(all_labels, all_preds, zero_division=0)
     recall = recall_score(all_labels, all_preds, zero_division=0)
+    tn, fp, fn, tp = confusion_matrix(all_labels, all_preds).ravel()
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
     f1 = f1_score(all_labels, all_preds, zero_division=0)
     roc_auc = roc_auc_score(all_labels, all_probs)
     mcc = matthews_corrcoef(all_labels, all_preds)
 
-    return avg_loss, accuracy, precision, recall, f1, roc_auc, mcc
+    return avg_loss, accuracy, precision, recall, specificity, f1, roc_auc, mcc
 
 
 def train_single_run(

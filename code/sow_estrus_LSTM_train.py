@@ -62,7 +62,7 @@ def evaluate_model(model, loader, criterion, device):
             loss = criterion(outputs, batch_y)
             total_loss += loss.item()
 
-            probs = (outputs >= 0.5).cpu().numpy().flatten()
+            probs = outputs.cpu().numpy().flatten()
             all_raw_probs.extend(probs)
 
             preds = (probs >= 0.5).astype(float)
@@ -75,7 +75,12 @@ def evaluate_model(model, loader, criterion, device):
     accuracy = accuracy_score(all_labels, all_preds)
     precision = precision_score(all_labels, all_preds, zero_division=0)
     recall = recall_score(all_labels, all_preds, zero_division=0)
+
+    tn, fp, fn, tp = confusion_matrix(all_labels, all_preds).ravel()
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+
     f1 = f1_score(all_labels, all_preds, zero_division=0)
+
     roc_auc = roc_auc_score(all_labels, all_raw_probs)
     mcc = matthews_corrcoef(all_labels, all_preds)
 
@@ -85,6 +90,7 @@ def evaluate_model(model, loader, criterion, device):
         "Precision": precision,
         "Recall": recall,
         "F1-Score": f1,
+        "Specificity": specificity,
         "AUC": roc_auc,
         "MCC": mcc,
     }
@@ -203,6 +209,7 @@ def main():
         "val_accuracy": [],
         "val_precision": [],
         "val_recall": [],
+        "val_specificity": [],
         "val_f1": [],
         "val_auc": [],
         "val_mcc": [],
@@ -248,6 +255,7 @@ def main():
         history["val_accuracy"].append(record_dict["Accuracy"])
         history["val_precision"].append(record_dict["Precision"])
         history["val_recall"].append(record_dict["Recall"])
+        history["val_specificity"].append(record_dict["Specificity"])
         history["val_f1"].append(record_dict["F1-Score"])
         history["val_auc"].append(record_dict["AUC"])
         history["val_mcc"].append(record_dict["MCC"])

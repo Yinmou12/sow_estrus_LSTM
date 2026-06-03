@@ -226,7 +226,15 @@ def ablation_predict(info: ablation_info):
     exp_names = info.exp_names
     num_runs = info.num_runs
 
-    metric_names = ["Accuracy", "Precision", "Recall", "F1", "AUC", "MCC"]
+    metric_names = [
+        "Accuracy",
+        "Precision",
+        "Recall",
+        "Specificity",
+        "F1",
+        "AUC",
+        "MCC",
+    ]
 
     file_name = "ablation\\Data_combination_1_addRate"
 
@@ -263,19 +271,30 @@ def ablation_predict(info: ablation_info):
                 device,
             )
 
-            avg_los, t_acc, t_precision, t_recall, t_f1, t_auc, t_mcc = (
+            avg_los, t_acc, t_precision, t_recall, t_spec, t_f1, t_auc, t_mcc = (
                 record_dict["avg_loss"],
                 record_dict["Accuracy"],
                 record_dict["Precision"],
                 record_dict["Recall"],
+                record_dict["Specificity"],
                 record_dict["F1-Score"],
                 record_dict["AUC"],
                 record_dict["MCC"],
             )
 
             run_key = f"{key}_{i+1}"
-            history[run_key] = [t_acc, t_precision, t_recall, t_f1, t_auc, t_mcc]
-            test_metrics.append([t_acc, t_precision, t_recall, t_f1, t_auc, t_mcc])
+            history[run_key] = [
+                t_acc,
+                t_precision,
+                t_recall,
+                t_spec,
+                t_f1,
+                t_auc,
+                t_mcc,
+            ]
+            test_metrics.append(
+                [t_acc, t_precision, t_recall, t_spec, t_f1, t_auc, t_mcc]
+            )
         test_metrics = np.array(test_metrics)
         test_metrics = test_metrics.T
 
