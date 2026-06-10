@@ -32,6 +32,43 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 
 
+class __train_info:
+    """
+    DATA_NotCor_AddTempRate_2026_0406_1213 : 耳温+变化率 未进行数据增强
+    DATA_AST_AddTempRate_2026_0416_1754 : 耳温+变化率 数据增强
+    """
+
+    saved_file_path = os.path.join(
+        info_FINAL_SAVE_PATH, "DATA_AST_AddTempRate_2026_0416_1754"
+    )
+    """
+        模型参数
+    """
+    model_name: str = "EstrusLSTM"
+    num_feature: int = 2
+    input_size: int = 2
+    layer_hidden_size: int = 64
+    num_layers: int = 4
+    hidden_sizes: list = (
+        None  # 支持每层不同单元数，如 [128, 64, 32]。一旦设置将优先使用它
+    )
+    learning_rate = 0.0005
+    use_cell_state: bool = False
+    dropout_rate = 0.2
+    bidirectional: bool = True
+    num_heads: int = 4
+    """
+        训练控制参数
+    """
+    batch_size: int = 32
+    num_epochs: int = 100
+    early_patience: int = 7
+    lr_patience: int = 5
+
+    # VERSION_TRAIN = "BiLSTM"
+    VERSION_TRAIN = "BiLSTM_DATA_AST_AddTempRate"
+
+
 # 数据准备类
 class EstrusDataset(Dataset):
     def __init__(self, X, y):
@@ -111,34 +148,76 @@ def load_combined_dataset(file_name, num_features=2):
     return X_3d, y
 
 
-class __train_info:
-    """
-    DATA_NotCor_AddTempRate_2026_0406_1213 : 耳温+变化率 未进行数据增强
-    DATA_AST_AddTempRate_2026_0416_1754 : 耳温+变化率 数据增强
-    """
-
-    saved_file_path = os.path.join(
-        info_FINAL_SAVE_PATH, "DATA_AST_AddTempRate_2026_0416_1754"
+def get_model(train_info, device, input_size=None):
+    from lstm_model import (
+        EstrusLSTM,
+        EstrusLSTM_Attn,
+        EstrusLSTM_DotProductAttn,
+        EstrusLSTM_ScaledDotProductAttn,
+        EstrusLSTM_MultiHeadAttn,
+        EstrusGRU,
     )
-    """
-        模型参数
-    """
-    num_feature: int = 2
-    input_size: int = 2
-    layer_hidden_size: int = 64
-    learning_rate = 0.0005
-    use_cell_state: bool = False
-    dropout_rate = 0.2
-    """
-        训练控制参数
-    """
-    batch_size: int = 32
-    num_epochs: int = 100
-    early_patience: int = 7
-    lr_patience: int = 5
 
-    # VERSION_TRAIN = "BiLSTM"
-    VERSION_TRAIN = "BiLSTM_DATA_AST_AddTempRate"
+    actual_input_size = input_size if input_size is not None else train_info.input_size
+
+    if train_info.model_name == "EstrusLSTM":
+        model = EstrusLSTM(
+            input_size=actual_input_size,
+            hidden_size=train_info.layer_hidden_size,
+            num_layers=train_info.num_layers,
+            hidden_sizes=getattr(train_info, "hidden_sizes", None),
+            use_cell_state=train_info.use_cell_state,
+            dropout_rate=train_info.dropout_rate,
+            bidirectional=train_info.bidirectional,
+        )
+    elif train_info.model_name == "EstrusLSTM_Attn":
+        model = EstrusLSTM_Attn(
+            input_size=actual_input_size,
+            hidden_size=train_info.layer_hidden_size,
+            num_layers=train_info.num_layers,
+            hidden_sizes=getattr(train_info, "hidden_sizes", None),
+            dropout_rate=train_info.dropout_rate,
+            bidirectional=train_info.bidirectional,
+        )
+    elif train_info.model_name == "EstrusLSTM_DotProductAttn":
+        model = EstrusLSTM_DotProductAttn(
+            input_size=actual_input_size,
+            hidden_size=train_info.layer_hidden_size,
+            num_layers=train_info.num_layers,
+            hidden_sizes=getattr(train_info, "hidden_sizes", None),
+            dropout_rate=train_info.dropout_rate,
+            bidirectional=train_info.bidirectional,
+        )
+    elif train_info.model_name == "EstrusLSTM_ScaledDotProductAttn":
+        model = EstrusLSTM_ScaledDotProductAttn(
+            input_size=actual_input_size,
+            hidden_size=train_info.layer_hidden_size,
+            num_layers=train_info.num_layers,
+            hidden_sizes=getattr(train_info, "hidden_sizes", None),
+            dropout_rate=train_info.dropout_rate,
+            bidirectional=train_info.bidirectional,
+        )
+    elif train_info.model_name == "EstrusLSTM_MultiHeadAttn":
+        model = EstrusLSTM_MultiHeadAttn(
+            input_size=actual_input_size,
+            hidden_size=train_info.layer_hidden_size,
+            num_layers=train_info.num_layers,
+            hidden_sizes=getattr(train_info, "hidden_sizes", None),
+            num_heads=train_info.num_heads,
+            dropout_rate=train_info.dropout_rate,
+            bidirectional=train_info.bidirectional,
+        )
+    elif train_info.model_name == "EstrusGRU":
+        model = EstrusGRU(
+            input_size=actual_input_size,
+            hidden_size=train_info.layer_hidden_size,
+            num_layers=train_info.num_layers,
+            dropout=train_info.dropout_rate,
+        )
+    else:
+        raise ValueError(f"Unknown model_name: {train_info.model_name}")
+
+    return model.to(device)
 
 
 def main():
@@ -181,12 +260,7 @@ def main():
     # 初始化模型、损失函数和优化器
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    model = EstrusLSTM(
-        input_size=input_size,
-        hidden_size=layer_hidden_size,
-        use_cell_state=use_cell_state,
-        dropout_rate=dropout_rate,
-    ).to(device)
+    model = get_model(train_info, device)
 
     # 使用二元交叉熵损失函数
     criterion = nn.BCELoss()
@@ -288,21 +362,23 @@ def main():
         f.write(f"结果保存路径 (saved_result_path): {saved_result_path}\n")
         f.write("\n")
         f.write("+" * 30 + " 模型参数 " + "+" * 30 + "\n")
+        f.write(f"model_name: {train_info.model_name}\n")
         f.write(f"num_features & input_size : {train_info.num_feature}\n")
         f.write(f"hidden_size: {train_info.layer_hidden_size}\n")
+        f.write(f"num_layers: {train_info.num_layers}\n")
+        if getattr(train_info, "hidden_sizes", None):
+            f.write(f"hidden_sizes (逐层单元数): {train_info.hidden_sizes}\n")
         f.write(f"use_cell_state: {train_info.use_cell_state}\n")
         f.write(f"dropout_rate: {train_info.dropout_rate}\n")
+        f.write(f"bidirectional: {train_info.bidirectional}\n")
+        if train_info.model_name == "EstrusLSTM_MultiHeadAttn":
+            f.write(f"num_heads: {train_info.num_heads}\n")
         f.write(f"batch_size: {train_info.batch_size}\n")
-        f.write(f"batch_size: {train_info.num_epochs}\n")
+        f.write(f"num_epochs: {train_info.num_epochs}\n")
         f.write(f"early_patience: {train_info.early_patience}\n")
         f.write(f"early_stopping_epoch: {early_stopping_epoch}\n")
         f.write("\n")
         f.write("+" * 30 + " 其它信息 " + "+" * 30 + "\n")
-        """ f.write(f"ADASYN -- gamma: 1, k=5\n")
-        f.write(f"SMOTE -- amount_oversampling: 800, k: 7\n")
-        f.write(f"TomekLinked 欠采样\n")
-        f.write(f"增加温度变化率特征\n") """
-        # f.write(f"关闭学习率调度")
     print(f"数据来源记录已保存至: {info_log_path}")
 
     # 验证集历史指标

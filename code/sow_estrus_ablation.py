@@ -8,7 +8,7 @@ from lstm_model import (
 )
 import sow_estrus_LSTM_Function as myFunction
 from sow_estrus_LSTM_train import EstrusDataset, evaluate_model
-from sow_estrus_LSTM_train import __train_info as TrainInfo
+from sow_estrus_LSTM_train import __train_info as TrainInfo, get_model
 
 import joblib
 import json
@@ -138,11 +138,8 @@ def ablation_train(info: ablation_info):
                 saved_result_path, f"val_history_{i+1}.json"
             )
 
-            model = EstrusLSTM(
-                input_size=input_size,
-                hidden_size=layer_hidden_size,
-                use_cell_state=info.use_cell_state,
-            ).to(device)
+            info.train_info.use_cell_state = info.use_cell_state
+            model = get_model(info.train_info, device, input_size=input_size)
 
             criterion = nn.BCELoss()
             optimizer = optim.Adam(model.parameters(), lr=0.0005, weight_decay=1e-4)
@@ -256,11 +253,8 @@ def ablation_predict(info: ablation_info):
         for i in range(num_runs):
             model_saved_path = os.path.join(save_path, f"best_model_{i+1}.pth")
 
-            model = EstrusLSTM(
-                input_size=input_size,
-                hidden_size=layer_hidden_size,
-                use_cell_state=info.use_cell_state,
-            ).to(device)
+            info.train_info.use_cell_state = info.use_cell_state
+            model = get_model(info.train_info, device, input_size=input_size)
             model.load_state_dict(torch.load(model_saved_path))
 
             criterion = nn.BCELoss()

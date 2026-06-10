@@ -2,7 +2,7 @@ from lstm_model import EstrusLSTM, EstrusGRU, EstrusLSTM_MultiHeadAttn
 from sow_estrus_LSTM_Function import plot_matrix
 from sow_estrus_LSTM_Info import result_save_path
 from sow_estrus_LSTM_train import EstrusDataset, evaluate_model, load_combined_dataset
-from sow_estrus_LSTM_train import __train_info
+from sow_estrus_LSTM_train import __train_info, get_model
 
 import os
 import torch
@@ -29,11 +29,7 @@ if __name__ == "__main__":
     batch_size = 32
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = EstrusLSTM(
-        input_size=input_size,
-        hidden_size=layer_hidden_size,
-        use_cell_state=use_cell_state,
-    ).to(device)
+    model = get_model(train_info, device, input_size=input_size)
     model.load_state_dict(torch.load(model_saved_path))
 
     # 评估

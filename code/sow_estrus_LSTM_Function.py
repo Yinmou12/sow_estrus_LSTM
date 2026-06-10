@@ -674,7 +674,7 @@ def function_filled(data: pd.DataFrame):
     return record_dataset
 
 
-def fill_data(data: pd.DataFrame, balanced_data=True, stride=6):
+def fill_data(data: pd.DataFrame, balanced_data=True, stride=12):
     final_dataset = pd.DataFrame()
 
     estrus_sows = data[data["isEstrus"] == 1]["sSowsNo"].unique()
@@ -1091,7 +1091,11 @@ def ADASYN(threshold, gamma, df_min: pd.DataFrame, df_maj: pd.DataFrame, k=7):
     df_maj: 多数类样本
     k: k近邻的数量
     """
+    print(f"{"-"*60} ADASYN 过采样 {"-"*60}")
     d = len(df_min) / len(df_maj)
+    print(
+        f"当前少数类样本数: {len(df_min)}, 多数类样本数: {len(df_maj)}, 比例: {d:.4f}"
+    )
     if d >= threshold:
         return pd.concat([df_min, df_maj], axis=0).reset_index(drop=True)
 
@@ -1105,6 +1109,7 @@ def ADASYN(threshold, gamma, df_min: pd.DataFrame, df_maj: pd.DataFrame, k=7):
 
     # 合成样本数
     G = int(gamma * (len(df_maj) - len(df_min)))
+    print(f"需要生成的合成样本数: {G}")
     if G <= 0:
         return pd.concat([df_min, df_maj], axis=0)
 
@@ -1137,6 +1142,7 @@ def ADASYN(threshold, gamma, df_min: pd.DataFrame, df_maj: pd.DataFrame, k=7):
             s_features = X_min[i] + lambd * (x_zi - X_min[i])
             X_syn.append(s_features)
 
+    count_min = len(df_min)
     # 构造新的DataFrame
     if len(X_syn) > 0:
         # 先用纯 float 特征构造 DataFrame
@@ -1157,6 +1163,7 @@ def ADASYN(threshold, gamma, df_min: pd.DataFrame, df_maj: pd.DataFrame, k=7):
         df_augmented[df_min.columns[-1]] = df_augmented[df_min.columns[-1]].astype(int)
         return df_augmented
 
+    print(f"{"-"*60} ADASYN 过采样个数: {len(df_min) - count_min} {"-"*60}")
     return pd.concat([df_min, df_maj], axis=0)
 
 
