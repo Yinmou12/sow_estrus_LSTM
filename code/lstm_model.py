@@ -18,8 +18,6 @@ def _resolve_hidden_sizes(hidden_size=128, num_layers=4, hidden_sizes=None):
 
 
 class LayerWiseBiLSTM(nn.Module):
-    """Stack one-layer LSTMs so each layer can have its own hidden size."""
-
     def __init__(
         self,
         input_size=1,
@@ -144,8 +142,6 @@ class EstrusLSTM(nn.Module):
 
 
 class DotProductAttention(nn.Module):
-    """Dot-product attention for pooling. Faster and uses fewer parameters than Additive Attention."""
-
     def __init__(self, input_dim):
         super().__init__()
         # A learnable query vector that represents the "optimal" feature for estrus detection
@@ -162,8 +158,6 @@ class DotProductAttention(nn.Module):
 
 
 class ScaledDotProductAttention(nn.Module):
-    """Scaled Dot-product attention (Transformer style) to maintain gradient stability."""
-
     def __init__(self, input_dim):
         super().__init__()
         self.query = nn.Parameter(torch.randn(input_dim))
@@ -178,8 +172,6 @@ class ScaledDotProductAttention(nn.Module):
 
 
 class EstrusLSTM_DotProductAttn(nn.Module):
-    """Comparison model using Dot-Product Attention."""
-
     def __init__(
         self,
         input_size=1,
@@ -216,8 +208,6 @@ class EstrusLSTM_DotProductAttn(nn.Module):
 
 
 class EstrusLSTM_ScaledDotProductAttn(nn.Module):
-    """Comparison model using Scaled Dot-Product Attention."""
-
     def __init__(
         self,
         input_size=1,
@@ -254,8 +244,6 @@ class EstrusLSTM_ScaledDotProductAttn(nn.Module):
 
 
 class TemporalAttention(nn.Module):
-    """Additive attention over the LSTM time steps."""
-
     def __init__(self, input_dim, attention_dim=None):
         super().__init__()
         attention_dim = attention_dim or input_dim
@@ -270,8 +258,6 @@ class TemporalAttention(nn.Module):
 
 
 class Attention(TemporalAttention):
-    """Backward-compatible alias for existing imports."""
-
     def __init__(self, hidden_size):
         super().__init__(hidden_size)
 

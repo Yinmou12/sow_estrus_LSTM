@@ -7,6 +7,7 @@ Run three ablation experiments on unbalanced filled data:
 """
 
 import argparse
+import itertools
 import json
 import os
 import random
@@ -100,11 +101,12 @@ def build_model(exp_config, train_info, hidden_sizes, device):
     # 根据配置决定输入维度 (1: 仅耳温, 2: 耳温+变化率)
     input_size = 2 if exp_config.get("use_rate", True) else 1
     bidirectional = exp_config.get("bidirectional", True)
+    current_hidden_sizes = exp_config.get("hidden_sizes", hidden_sizes)
 
     common_kwargs = {
         "input_size": input_size,
-        "hidden_sizes": hidden_sizes,
-        "num_layers": len(hidden_sizes),
+        "hidden_sizes": current_hidden_sizes,
+        "num_layers": len(current_hidden_sizes),
         "dropout_rate": train_info.dropout_rate,
         "bidirectional": bidirectional,
     }
@@ -120,6 +122,8 @@ def build_model(exp_config, train_info, hidden_sizes, device):
     attn_type = exp_config.get("attn_type")
     if exp_config["use_attention"] and attn_type in ATTN_MODELS:
         model_class = ATTN_MODELS[attn_type]
+        if attn_type == "MultiHead" and "num_heads" in exp_config:
+            common_kwargs["num_heads"] = exp_config["num_heads"]
         return model_class(**common_kwargs).to(device)
 
     # 默认模型
@@ -154,9 +158,14 @@ def train_one_fold(
     model = build_model(exp_config, train_info, hidden_sizes, device)
 
     criterion = nn.BCELoss()
+
+    # 提取当前超参数，支持网格搜索动态调整
+    current_lr = exp_config.get("learning_rate", train_info.learning_rate)
+    current_bs = exp_config.get("batch_size", train_info.batch_size)
+
     optimizer = torch.optim.Adam(
         model.parameters(),
-        lr=train_info.learning_rate,
+        lr=current_lr,
         weight_decay=1e-4,
     )
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -166,7 +175,7 @@ def train_one_fold(
         patience=train_info.lr_patience,
     )
 
-    batch_size = min(train_info.batch_size, max(1, len(y_train)))
+    batch_size = min(current_bs, max(1, len(y_train)))
     train_loader = DataLoader(
         EstrusDataset(X_train, y_train),
         batch_size=batch_size,
@@ -175,7 +184,7 @@ def train_one_fold(
     )
     val_loader = DataLoader(
         EstrusDataset(X_val, y_val),
-        batch_size=train_info.batch_size,
+        batch_size=current_bs,
         shuffle=False,
     )
 
@@ -396,7 +405,7 @@ def run_ablation(
                     device,
                     X_test,
                     y_test,
-                    train_info.batch_size,
+                    exp_config.get("batch_size", train_info.batch_size),
                 )
                 fold_test_metrics.append(test_metrics)
                 details.append(
@@ -507,10 +516,13 @@ def build_arg_parser():
         default=None,
         help="Specific experiment name(s) or keywords to run (supports multiple inputs)",
     )
+    parser.add_argument(
+        "--grid-search", action="store_true", help="启用多头注意力超参数网格搜索"
+    )
     return parser
 
 
-def main():
+def main(target_exp_names=None, grid_search=False):
     args = build_arg_parser().parse_args()
 
     train_info = TrainInfo()
@@ -524,20 +536,55 @@ def main():
     TrainInfo.num_epochs = train_info.num_epochs
     TrainInfo.batch_size = train_info.batch_size
 
-    # 根据命令行参数过滤实验
-    target_experiments = EXPERIMENTS
-    if args.exp_name:
-        # 支持多个名称匹配，并采用子字符串匹配增强灵活性
-        target_experiments = [
-            e
-            for e in EXPERIMENTS
-            if any(keyword in e["name"] for keyword in args.exp_name)
-        ]
-
-        if not target_experiments:
-            print(f"Error: No experiments matching {args.exp_name} were found.")
+    # 1. 首先根据目标名称过滤基础实验
+    base_experiments = EXPERIMENTS
+    exp_names_to_use = target_exp_names if target_exp_names else args.exp_name
+    if exp_names_to_use:
+        base_experiments = [e for e in EXPERIMENTS if e["name"] in exp_names_to_use]
+        if not base_experiments:
+            print(f"Error: No experiments matching {exp_names_to_use} were found.")
             print(f"Available experiments: {[e['name'] for e in EXPERIMENTS]}")
             return
+
+    run_grid_search = grid_search or args.grid_search
+
+    if run_grid_search:
+        print("\n" + "=" * 50)
+        print("初始化超参数网格搜索 (Grid Search) ...")
+        print("=" * 50)
+
+        # 定义搜索空间 (可根据需要调整)
+        gs_hidden_sizes = [[64, 64, 64, 64], [128, 64, 64, 32]]
+        gs_lrs = [0.001, 0.0005]
+        gs_batch_sizes = [16, 32]
+        gs_num_heads = [2, 4, 8]
+
+        target_experiments = []
+        for base_exp in base_experiments:
+            for hs, lr, bs, nh in itertools.product(
+                gs_hidden_sizes, gs_lrs, gs_batch_sizes, gs_num_heads
+            ):
+                # 如果当前实验不是 MultiHead 注意力，不需要重复跑多次不同 num_heads 的实验
+                if base_exp.get("attn_type") != "MultiHead" and nh != gs_num_heads[0]:
+                    continue
+
+                new_exp = base_exp.copy()
+                nh_str = f"_NH{nh}" if base_exp.get("attn_type") == "MultiHead" else ""
+                new_exp["name"] = (
+                    f"{base_exp['name']}_GS_HS{hs[0]}_LR{lr}_BS{bs}{nh_str}"
+                )
+                new_exp["description"] = (
+                    f"{base_exp['description']} | GS: HS={hs}, LR={lr}, BS={bs}, Heads={nh if base_exp.get('attn_type') == 'MultiHead' else 'N/A'}"
+                )
+                new_exp["hidden_sizes"] = hs
+                new_exp["learning_rate"] = lr
+                new_exp["batch_size"] = bs
+                if base_exp.get("attn_type") == "MultiHead":
+                    new_exp["num_heads"] = nh
+                target_experiments.append(new_exp)
+        print(f"即将运行 {len(target_experiments)} 组网格搜索实验。")
+    else:
+        target_experiments = base_experiments
         print(
             f"Selected {len(target_experiments)} experiments to run: {[e['name'] for e in target_experiments]}"
         )
@@ -559,4 +606,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # 单独运行 MultiFeat_Bi_SMOTE_Tomek_TemporalAttn 并启用网格搜索
+    main(target_exp_names=["MultiFeat_Bi_SMOTE_Tomek_TemporalAttn"], grid_search=True)

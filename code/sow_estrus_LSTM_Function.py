@@ -711,7 +711,7 @@ def fill_data(data: pd.DataFrame, balanced_data=True, stride=6):
         if balanced_data:
             sample_count = 0
             for start_idx in range(0, total_len - WINDOW_SIZE + 1, stride):
-                if sample_count >= ratio:
+                if sample_count > ratio:
                     continue
 
                 window_df = sub_df.iloc[start_idx : start_idx + WINDOW_SIZE].copy()

@@ -3,6 +3,7 @@ data/
 finalUsedData/
 result/
 temp_test_data/
+pictures/
 *.pyc
 *.ipynb
 *.zip

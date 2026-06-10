@@ -27,7 +27,7 @@ import torch.nn as nn
 pd.set_option("future.no_silent_downcasting", True)
 
 # 消融实验默认配置
-ABLATION_CONFIGS = [
+""" ABLATION_CONFIGS = [
     {"name": "Baseline", "A": False, "S": False, "T": False},
     {"name": "ADASYN", "A": True, "S": False, "T": False},
     {"name": "SMOTE", "A": False, "S": True, "T": False},
@@ -36,9 +36,16 @@ ABLATION_CONFIGS = [
     {"name": "ADASYN+TomekLinks", "A": True, "S": False, "T": True},
     {"name": "SMOTE+TomekLinks", "A": False, "S": True, "T": True},
     {"name": "Full_Aug", "A": True, "S": True, "T": True},
+] """
+
+""" ABLATION_CONFIGS = [
+    {"name": "Baseline", "S": False, "T": False},
+    {"name": "SMOTE_Tomek", "S": True, "T": True},
+] """
+
+ABLATION_CONFIGS = [
+    {"name": "AST", "A": True, "S": True, "T": True},
 ]
-# ABLATION_CONFIGS = [{"name": "Baseline", "A": False, "S": False, "T": False}]
-# ABLATION_CONFIGS = [{"name": "Full_Aug", "A": True, "S": True, "T": True}]
 
 
 def run_5fold_cv(df):
@@ -82,8 +89,10 @@ def run_5fold_cv(df):
         model = EstrusLSTM(
             input_size=train_info.input_size,
             hidden_size=train_info.layer_hidden_size,
+            num_layers=4,
             use_cell_state=train_info.use_cell_state,
             dropout_rate=train_info.dropout_rate,
+            bidirectional=True,
         ).to(device)
         criterion = nn.BCELoss()
         optimizer = torch.optim.Adam(model.parameters(), lr=train_info.learning_rate)
@@ -265,8 +274,10 @@ def run_5fold_cv_with_aug_temp(df):
             model = EstrusLSTM(
                 input_size=1,  # 仅使用单特征输入
                 hidden_size=train_info.layer_hidden_size,
+                num_layers=4,
                 use_cell_state=train_info.use_cell_state,
                 dropout_rate=train_info.dropout_rate,
+                bidirectional=True,
             ).to(device)
 
             criterion = nn.BCELoss()
@@ -368,7 +379,7 @@ def run_5fold_cv_with_aug(df):
 
     timestamp = datetime.now().strftime("%Y_%m%d_%H%M")
     saved_result_path = os.path.join(
-        result_save_path, "cv_ablation", "BF", f"{timestamp}"
+        result_save_path, "cv_ablation", "AST_temp_rate", f"{timestamp}"
     )
     os.makedirs(saved_result_path, exist_ok=True)
 
@@ -393,9 +404,13 @@ def run_5fold_cv_with_aug(df):
             print(f"\n--- {exp_name} | Fold {fold_idx + 1} ---")
 
             # 基础预处理
-            train_df = myFunction.fill_data(train_df_raw, balanced_data=False, stride=6)
+            """ train_df = myFunction.fill_data(train_df_raw,balanced_data=False, stride=6)
             print("+" * 60)
-            val_df = myFunction.fill_data(val_df_raw, balanced_data=False, stride=6)
+            val_df = myFunction.fill_data(val_df_raw, balanced_data=False, stride=6) """
+
+            train_df = myFunction.fill_data(train_df_raw)
+            print("+" * 60)
+            val_df = myFunction.fill_data(val_df_raw)
 
             # 数据增强 (仅针对训练集)
             # 先转换为特征矩阵格式以便增强函数处理
@@ -448,8 +463,10 @@ def run_5fold_cv_with_aug(df):
             model = EstrusLSTM(
                 input_size=train_info.input_size,
                 hidden_size=train_info.layer_hidden_size,
+                num_layers=4,
                 use_cell_state=train_info.use_cell_state,
                 dropout_rate=train_info.dropout_rate,
+                bidirectional=True,
             ).to(device)
 
             criterion = nn.BCELoss()
@@ -563,12 +580,12 @@ def evaluate_independent_test_set(base_path, configs=None, input_size=1):
     print(f"发情母猪个数: {len(estrus_sows)}, 非发情母猪个数: {len(not_estrus_sows)}")
 
     # 基础预处理
-    test_df_filled = myFunction.fill_data(
-        independent_test_df, balanced_data=False, stride=6
-    )
     """ test_df_filled = myFunction.fill_data(
-        independent_test_df, balanced_data=True, stride=12
+        independent_test_df, balanced_data=False, stride=6
     ) """
+    test_df_filled = myFunction.fill_data(
+        independent_test_df,
+    )
 
     final_test_results = {}
     train_info = TrainInfo()
@@ -605,8 +622,10 @@ def evaluate_independent_test_set(base_path, configs=None, input_size=1):
             model = EstrusLSTM(
                 input_size=input_size,  # 使用传入的 input_size
                 hidden_size=train_info.layer_hidden_size,
+                num_layers=4,
                 use_cell_state=train_info.use_cell_state,
                 dropout_rate=train_info.dropout_rate,
+                bidirectional=True,
             ).to(device)
             model.load_state_dict(torch.load(model_path, weights_only=True))
             scaler = joblib.load(scaler_path)
@@ -679,7 +698,9 @@ if __name__ == "__main__":
     # evaluate_independent_test_set(ablation_path, configs, input_size=1)
 
     # 体温 + 体温变化率
-    ablation_path, configs = run_5fold_cv_with_aug(df)
-    # ablation_path = os.path.join(result_save_path, "cv_ablation", "2026_0517_1345")
-    # configs = ABLATION_CONFIGS
+    # ablation_path, configs = run_5fold_cv_with_aug(df)
+    ablation_path = os.path.join(
+        result_save_path, "cv_ablation", "AST_temp_rate", "2026_0607_1813"
+    )
+    configs = ABLATION_CONFIGS
     evaluate_independent_test_set(ablation_path, configs, input_size=2)
