@@ -62,6 +62,53 @@ class LayerWiseBiLSTM(nn.Module):
         return out, last_state
 
 
+class LayerWiseBiRNN(nn.Module):
+    def __init__(
+        self,
+        input_size=1,
+        hidden_size=128,
+        num_layers=4,
+        dropout_rate=0.2,
+        bidirectional=True,
+        hidden_sizes=None,
+        nonlinearity="tanh",
+    ):
+        super().__init__()
+        self.hidden_sizes = _resolve_hidden_sizes(hidden_size, num_layers, hidden_sizes)
+        self.bidirectional = bidirectional
+        self.num_directions = 2 if bidirectional else 1
+
+        layers = []
+        layer_input_size = input_size
+        for layer_hidden_size in self.hidden_sizes:
+            layers.append(
+                nn.RNN(
+                    input_size=layer_input_size,
+                    hidden_size=layer_hidden_size,
+                    num_layers=1,
+                    batch_first=True,
+                    bidirectional=bidirectional,
+                    nonlinearity=nonlinearity,
+                )
+            )
+            layer_input_size = layer_hidden_size * self.num_directions
+
+        self.layers = nn.ModuleList(layers)
+        self.dropouts = nn.ModuleList(
+            [nn.Dropout(dropout_rate) for _ in range(max(0, len(layers) - 1))]
+        )
+        self.output_size = self.hidden_sizes[-1] * self.num_directions
+
+    def forward(self, x):
+        out = x
+        last_state = None
+        for layer_idx, rnn in enumerate(self.layers):
+            out, last_state = rnn(out)
+            if layer_idx < len(self.dropouts):
+                out = self.dropouts[layer_idx](out)
+        return out, last_state
+
+
 class EstrusLSTM(nn.Module):
     def __init__(
         self,
@@ -358,7 +405,14 @@ class EstrusLSTM_MultiHeadAttn(nn.Module):
 
 
 class EstrusGRU(nn.Module):
-    def __init__(self, input_size=1, hidden_size=128, num_layers=3, dropout=0.2):
+    def __init__(
+        self,
+        input_size=1,
+        hidden_size=128,
+        num_layers=3,
+        dropout=0.2,
+        bidirectional=True,
+    ):
         super().__init__()
 
         self.gru = nn.GRU(
@@ -367,17 +421,120 @@ class EstrusGRU(nn.Module):
             num_layers=num_layers,
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0,
-            bidirectional=True,
+            bidirectional=bidirectional,
         )
-        self.fc1 = nn.Linear(hidden_size * 2, 32)
+        self.num_directions = 2 if bidirectional else 1
+        self.fc1 = nn.Linear(hidden_size * self.num_directions, 32)
         self.fc2 = nn.Linear(32, 1)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout)
-        self.layer_norm = nn.LayerNorm(hidden_size * 2)
+        self.layer_norm = nn.LayerNorm(hidden_size * self.num_directions)
 
     def forward(self, x):
         _, h_n = self.gru(x)
-        feature = torch.cat((h_n[-2, :, :], h_n[-1, :, :]), dim=1)
+        if self.gru.bidirectional:
+            feature = torch.cat((h_n[-2, :, :], h_n[-1, :, :]), dim=1)
+        else:
+            feature = h_n[-1, :, :]
+        out = self.layer_norm(feature)
+        out = self.relu(self.fc1(out))
+        out = self.dropout(out)
+        return torch.sigmoid(self.fc2(out))
+
+
+class EstrusRNN_sample(nn.Module):
+    def __init__(
+        self,
+        input_size=1,
+        hidden_size=128,
+        num_layers=1,
+        dropout=0.0,
+        bidirectional=False,
+    ):
+        super().__init__()
+
+        self.rnn = nn.RNN(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0,
+            bidirectional=bidirectional,
+        )
+        self.num_directions = 2 if bidirectional else 1
+        self.fc = nn.Linear(hidden_size * self.num_directions, 1)
+
+    def forward(self, x):
+        _, h_n = self.rnn(x)
+        if self.rnn.bidirectional:
+            feature = torch.cat([h_n[-2], h_n[-1]], dim=1)
+        else:
+            feature = h_n[-1]
+        return torch.sigmoid(self.fc(feature))
+
+
+class EstrusRNN(nn.Module):
+    def __init__(
+        self,
+        input_size=1,
+        hidden_size=128,
+        num_layers=4,
+        hidden_sizes=None,
+        dropout_rate=0.2,
+        dropout=None,
+        feature_mode="h_n_state",
+        bidirectional=False,
+        nonlinearity="tanh",
+    ):
+        super().__init__()
+
+        if dropout is not None:
+            dropout_rate = dropout
+
+        self.feature_mode = feature_mode
+        self.bidirectional = bidirectional
+
+        self.encoder = LayerWiseBiRNN(
+            input_size=input_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            hidden_sizes=hidden_sizes,
+            dropout_rate=dropout_rate,
+            bidirectional=bidirectional,
+            nonlinearity=nonlinearity,
+        )
+        self.rnn_layers = self.encoder.layers
+        self.hidden_sizes = self.encoder.hidden_sizes
+        feature_size = self.encoder.output_size
+
+        if self.feature_mode in ["h_n_state", "last_out", "mean_out"]:
+            feat_dim = feature_size
+        else:
+            raise ValueError(f"Unknown feature_mode: {feature_mode}")
+
+        self.layer_norm = nn.LayerNorm(feat_dim)
+        self.fc1 = nn.Linear(feat_dim, 32)
+        self.fc2 = nn.Linear(32, 1)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout_rate)
+
+    def _last_state_feature(self, h_n):
+        if self.bidirectional:
+            return torch.cat([h_n[-2, :, :], h_n[-1, :, :]], dim=1)
+        return h_n[-1, :, :]
+
+    def forward(self, x):
+        out, h_n = self.encoder(x)
+
+        if self.feature_mode == "h_n_state":
+            feature = self._last_state_feature(h_n)
+        elif self.feature_mode == "last_out":
+            feature = out[:, -1, :]
+        elif self.feature_mode == "mean_out":
+            feature = torch.mean(out, dim=1)
+        else:
+            raise ValueError(f"Unknown feature_mode: {self.feature_mode}")
+
         out = self.layer_norm(feature)
         out = self.relu(self.fc1(out))
         out = self.dropout(out)

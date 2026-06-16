@@ -4,6 +4,7 @@ finalUsedData/
 result/
 temp_test_data/
 pictures/
+codex_picture/
 *.pyc
 *.ipynb
 *.zip

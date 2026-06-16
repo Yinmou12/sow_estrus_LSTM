@@ -84,14 +84,63 @@ class EstrusDataset(Dataset):
         return self.X[idx], self.y[idx]
 
 
-def evaluate_model(model, loader, criterion, device):
-    model.eval()  # 设置模型为评估模式，关闭 dropout 和 batch normalization
+def find_best_threshold(labels, probs, metric="f1", thresholds=None):
+    labels = np.asarray(labels).astype(int)
+    probs = np.asarray(probs)
+
+    if thresholds is None:
+        thresholds = np.linspace(0.05, 0.95, 91)
+
+    if len(np.unique(labels)) < 2:
+        return 0.5
+
+    best_threshold = 0.5
+    best_score = -np.inf
+
+    for threshold in thresholds:
+        preds = (probs >= threshold).astype(int)
+        tn, fp, fn, tp = confusion_matrix(labels, preds, labels=[0, 1]).ravel()
+        precision = precision_score(labels, preds, zero_division=0)
+        recall = recall_score(labels, preds, zero_division=0)
+        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+        f1 = f1_score(labels, preds, zero_division=0)
+        mcc = matthews_corrcoef(labels, preds)
+
+        if metric == "recall":
+            score = recall
+        elif metric == "specificity":
+            score = specificity
+        elif metric == "balanced_accuracy":
+            score = (recall + specificity) / 2
+        elif metric == "youden":
+            score = recall + specificity - 1
+        elif metric == "mcc":
+            score = mcc
+        else:
+            score = f1
+
+        if score > best_score:
+            best_score = score
+            best_threshold = float(threshold)
+
+    return best_threshold
+
+
+def evaluate_model(
+    model,
+    loader,
+    criterion,
+    device,
+    threshold=0.5,
+    optimize_threshold=False,
+    threshold_metric="recall",
+):
+    model.eval()
     total_loss = 0
-    all_raw_probs = []  # 搜集概率以计算 ROC_AUC
-    all_preds = []
+    all_raw_probs = []
     all_labels = []
 
-    with torch.no_grad():  # 评估时不计算梯度，节省内存和计算资源
+    with torch.no_grad():
         for batch_X, batch_y in loader:
             batch_X, batch_y = batch_X.to(device), batch_y.to(device)
             outputs = model(batch_X)
@@ -99,30 +148,41 @@ def evaluate_model(model, loader, criterion, device):
             loss = criterion(outputs, batch_y)
             total_loss += loss.item()
 
-            probs = outputs.cpu().numpy().flatten()
-            all_raw_probs.extend(probs)
-
-            preds = (probs >= 0.5).astype(float)
-            all_preds.extend(preds)
-
+            all_raw_probs.extend(outputs.cpu().numpy().flatten())
             all_labels.extend(batch_y.cpu().numpy().flatten())
 
     avg_loss = total_loss / len(loader)
+    all_labels = np.asarray(all_labels).astype(int)
+    all_raw_probs = np.asarray(all_raw_probs)
+
+    if optimize_threshold:
+        threshold = find_best_threshold(
+            all_labels, all_raw_probs, metric=threshold_metric
+        )
+
+    all_preds = (all_raw_probs >= threshold).astype(int)
 
     accuracy = accuracy_score(all_labels, all_preds)
     precision = precision_score(all_labels, all_preds, zero_division=0)
     recall = recall_score(all_labels, all_preds, zero_division=0)
 
-    tn, fp, fn, tp = confusion_matrix(all_labels, all_preds).ravel()
+    tn, fp, fn, tp = confusion_matrix(all_labels, all_preds, labels=[0, 1]).ravel()
     specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
-
     f1 = f1_score(all_labels, all_preds, zero_division=0)
-
-    roc_auc = roc_auc_score(all_labels, all_raw_probs)
+    roc_auc = (
+        roc_auc_score(all_labels, all_raw_probs)
+        if len(np.unique(all_labels)) > 1
+        else 0
+    )
     mcc = matthews_corrcoef(all_labels, all_preds)
 
     metrics_dict = {
         "avg_loss": avg_loss,
+        "Threshold": float(threshold),
+        "Positive_Predictions": int(np.sum(all_preds == 1)),
+        "Prob_Min": float(np.min(all_raw_probs)),
+        "Prob_Max": float(np.max(all_raw_probs)),
+        "Prob_Mean": float(np.mean(all_raw_probs)),
         "Accuracy": accuracy,
         "Precision": precision,
         "Recall": recall,
@@ -156,6 +216,8 @@ def get_model(train_info, device, input_size=None):
         EstrusLSTM_ScaledDotProductAttn,
         EstrusLSTM_MultiHeadAttn,
         EstrusGRU,
+        EstrusRNN,
+        EstrusRNN_sample,
     )
 
     actual_input_size = input_size if input_size is not None else train_info.input_size
@@ -213,6 +275,24 @@ def get_model(train_info, device, input_size=None):
             hidden_size=train_info.layer_hidden_size,
             num_layers=train_info.num_layers,
             dropout=train_info.dropout_rate,
+            bidirectional=getattr(train_info, "bidirectional", True),
+        )
+    elif train_info.model_name == "EstrusRNN":
+        model = EstrusRNN(
+            input_size=actual_input_size,
+            hidden_size=train_info.layer_hidden_size,
+            num_layers=train_info.num_layers,
+            hidden_sizes=getattr(train_info, "hidden_sizes", None),
+            dropout_rate=train_info.dropout_rate,
+            bidirectional=getattr(train_info, "bidirectional", False),
+        )
+    elif train_info.model_name == "EstrusRNN_sample":
+        model = EstrusRNN_sample(
+            input_size=actual_input_size,
+            hidden_size=train_info.layer_hidden_size,
+            num_layers=train_info.num_layers,
+            dropout=train_info.dropout_rate,
+            bidirectional=getattr(train_info, "bidirectional", False),
         )
     else:
         raise ValueError(f"Unknown model_name: {train_info.model_name}")

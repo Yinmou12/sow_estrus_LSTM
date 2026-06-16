@@ -487,6 +487,56 @@ def run_ablation(
     return save_root
 
 
+def run_grid_search_tuning(
+    df,
+    base_experiment,
+    hidden_sizes_list,
+    learning_rates,
+    n_splits=5,
+    test_ratio=0.2,
+    stride=6,
+    smote_amount=800,
+    smote_k=7,
+    tomek_k=1,
+    random_state=123,
+    evaluate_independent_test=True,
+):
+    """
+    使用网格搜索调整模型的隐藏单元数量和不同学习率的组合
+    """
+    target_experiments = []
+    for hs, lr in itertools.product(hidden_sizes_list, learning_rates):
+        new_exp = base_experiment.copy()
+        new_exp["name"] = f"{base_experiment['name']}_GS_HS{hs[0]}_LR{lr}"
+        new_exp["description"] = (
+            f"{base_experiment['description']} | GS: HS={hs}, LR={lr}"
+        )
+        new_exp["hidden_sizes"] = hs
+        new_exp["learning_rate"] = lr
+        target_experiments.append(new_exp)
+
+    print(f"\n" + "=" * 50)
+    print("初始化网格搜索 (Grid Search) 调整隐藏单元数量和学习率 ...")
+    print(f"即将运行 {len(target_experiments)} 组网格搜索实验。")
+    print("=" * 50)
+
+    return run_ablation(
+        df=df,
+        experiment_list=target_experiments,
+        n_splits=n_splits,
+        test_ratio=test_ratio,
+        stride=stride,
+        hidden_sizes=hidden_sizes_list[
+            0
+        ],  # 默认值，会在模型构建时被 exp_config 中的 hidden_sizes 覆盖
+        smote_amount=smote_amount,
+        smote_k=smote_k,
+        tomek_k=tomek_k,
+        random_state=random_state,
+        evaluate_independent_test=evaluate_independent_test,
+    )
+
+
 def build_arg_parser():
     default_data_file = os.path.join(
         experimentRecord_data_path,

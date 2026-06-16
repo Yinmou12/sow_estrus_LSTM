@@ -567,27 +567,17 @@ def stratified_group_split(df, train_ratio=0.7, val_ratio=0.1, test_ratio=0.2):
     return train_df, val_df, test_df
 
 
-# 5折分层分组交叉验证
-def stratified_group_kfold(df, n_splits=5, test_ratio=0.2, random_state=123):
+def split_dataset_train_val_test(df, test_ratio=0.2, random_state=123):
     """
-    先划分出独立测试集，再对剩余数据进行5折分层分组交叉验证。
-    确保同一母猪的数据不会同时出现在训练集、验证集或独立测试集中，并保持发情与非发情猪的比例。
+    新增：将数据集先划分为训练用（训练集+验证集）和独立测试用。
+    保证同一母猪数据不会跨越集合，并保持发情与非发情猪比例。
+    建议可以在外部调用并将返回的数据集分别保存，以便之后重复读取使用。
     """
-    # 确定每头猪是否发情（标签）
     estrus_sows = df[df["isEstrus"] == 1]["sSowsNo"].unique()
     all_sows = df["sSowsNo"].unique()
 
-    sow_labels = []
-    for sow in all_sows:
-        if sow in estrus_sows:
-            sow_labels.append(1)
-        else:
-            sow_labels.append(0)
+    sow_labels = np.array([1 if sow in estrus_sows else 0 for sow in all_sows])
 
-    sow_labels = np.array(sow_labels)
-    all_sows = np.array(all_sows)
-
-    # 划分独立测试集 (完全不参与交叉验证)
     internal_sows, test_sows, internal_labels, test_labels = train_test_split(
         all_sows,
         sow_labels,
@@ -596,28 +586,41 @@ def stratified_group_kfold(df, n_splits=5, test_ratio=0.2, random_state=123):
         random_state=random_state,
     )
 
-    independent_test_df = df[df["sSowsNo"].isin(test_sows)].copy()
+    train_val_df = df[df["sSowsNo"].isin(internal_sows)].copy()
+    test_df = df[df["sSowsNo"].isin(test_sows)].copy()
+
     print(
         f"独立测试集划分完成: 总母猪数 {len(test_sows)}, 其中发情 {int(test_labels.sum())}, 非发情 {len(test_sows) - int(test_labels.sum())}"
     )
 
-    # 在剩余的 internal 数据集上进行 5 折交叉验证
+    return train_val_df, test_df
+
+
+def stratified_group_kfold_only(train_val_df, n_splits=5, random_state=123):
+    """
+    新增：仅对传入的训练验证集进行分层 K 折交叉验证划分，不再额外划分测试集。
+    """
+    estrus_sows = train_val_df[train_val_df["isEstrus"] == 1]["sSowsNo"].unique()
+    all_sows = train_val_df["sSowsNo"].unique()
+
+    sow_labels = np.array([1 if sow in estrus_sows else 0 for sow in all_sows])
+
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
 
     folds = []
-    for train_idx, val_idx in skf.split(internal_sows, internal_labels):
-        train_sows_fold = internal_sows[train_idx]
-        val_sows_fold = internal_sows[val_idx]
+    for train_idx, val_idx in skf.split(all_sows, sow_labels):
+        train_sows_fold = all_sows[train_idx]
+        val_sows_fold = all_sows[val_idx]
 
-        train_df = df[df["sSowsNo"].isin(train_sows_fold)].copy()
-        val_df = df[df["sSowsNo"].isin(val_sows_fold)].copy()
+        train_df = train_val_df[train_val_df["sSowsNo"].isin(train_sows_fold)].copy()
+        val_df = train_val_df[train_val_df["sSowsNo"].isin(val_sows_fold)].copy()
 
         folds.append((train_df, val_df))
 
-        e_train_count = np.sum(internal_labels[train_idx] == 1)
-        n_train_count = np.sum(internal_labels[train_idx] == 0)
-        e_val_count = np.sum(internal_labels[val_idx] == 1)
-        n_val_count = np.sum(internal_labels[val_idx] == 0)
+        e_train_count = np.sum(sow_labels[train_idx] == 1)
+        n_train_count = np.sum(sow_labels[train_idx] == 0)
+        e_val_count = np.sum(sow_labels[val_idx] == 1)
+        n_val_count = np.sum(sow_labels[val_idx] == 0)
 
         print(f"--- Fold {len(folds)} ---")
         print(
@@ -626,6 +629,20 @@ def stratified_group_kfold(df, n_splits=5, test_ratio=0.2, random_state=123):
         print(
             f"验证集：母猪总数 {len(val_sows_fold)}, 其中发情猪 {e_val_count}, 非发情猪 {n_val_count}"
         )
+
+    return folds
+
+
+# 5折分层分组交叉验证
+def stratified_group_kfold(df, n_splits=5, test_ratio=0.2, random_state=123):
+    """
+    先划分出独立测试集，再对剩余数据进行5折分层分组交叉验证。
+    确保同一母猪的数据不会同时出现在训练集、验证集或独立测试集中，并保持发情与非发情猪的比例。
+    """
+    train_val_df, independent_test_df = split_dataset_train_val_test(
+        df, test_ratio, random_state
+    )
+    folds = stratified_group_kfold_only(train_val_df, n_splits, random_state)
 
     return independent_test_df, folds
 
