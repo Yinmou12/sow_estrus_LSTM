@@ -12,6 +12,15 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
+from sklearn.metrics import (
+    accuracy_score,
+    confusion_matrix,
+    f1_score,
+    matthews_corrcoef,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
 from torch.utils.data import DataLoader
 
 pd.set_option("future.no_silent_downcasting", True)
@@ -34,7 +43,7 @@ FIXED_SPLIT_DIR = os.path.join(info_FINAL_SAVE_PATH, "cross_validation")
 FIXED_TRAIN_VAL_PATH = os.path.join(FIXED_SPLIT_DIR, "train_val_df.xlsx")
 FIXED_TEST_PATH = os.path.join(FIXED_SPLIT_DIR, "independent_test_df.xlsx")
 ALL_EXPERIMENTS_ROOT = os.path.join(result_save_path, "all_experiments")
-DEFAULT_RANDOM_STATE = 123
+DEFAULT_RANDOM_STATE = 26
 
 # Experiments 2-5 are repeated to observe stability across CV fold splits.
 # Increase this value if you want more repeated results in one execution.
@@ -125,6 +134,8 @@ def config_to_result_fields(config):
     fields = {"Experiment": config["name"]}
     for key in [
         "experiment_id",
+        "bayes_iteration",
+        "dynamic_threshold",
         "A",
         "S",
         "T",
@@ -237,6 +248,23 @@ def prepare_test_data(test_df_raw, scaler, feature_mode):
     else:
         X_test, y_test, _ = myFunction.prepare_lstm_data(test_df, scaler=scaler)
     return X_test, y_test
+
+
+def prepare_final_train_data(train_val_df_raw, config, feature_mode):
+    # Build the final training set from the full train_val split.
+    if feature_mode == "temp_only":
+        train_df = myFunction.fill_data(train_val_df_raw, balanced_data=True, stride=6)
+        train_df_flat = apply_augmentation(train_df, config)
+        X_train, y_train, scaler = myFunction.prepare_univariate_lstm_data(
+            train_df_flat
+        )
+        return X_train, y_train, scaler, 1
+
+    train_df = myFunction.fill_data(train_val_df_raw)
+    train_df_flat = apply_augmentation(train_df, config)
+    train_final_df = add_rate_features(train_df_flat)
+    X_train, y_train, scaler = myFunction.prepare_lstm_data(train_final_df)
+    return X_train, y_train, scaler, 2
 
 
 def save_threshold(exp_dir, fold_idx, threshold):
@@ -381,8 +409,9 @@ def train_and_evaluate_experiment(
         metric_cols = [
             col
             for col in df.columns
-            if col not in {"Experiment", "Fold", "Dataset"}
+            if col not in {"Run", "Seed", "Experiment", "Fold", "Dataset"}
             and not col.startswith("param_")
+            and pd.api.types.is_numeric_dtype(df[col])
         ]
         avg = {col: df[col].mean() for col in metric_cols}
         avg_rows.append(
@@ -400,6 +429,264 @@ def train_and_evaluate_experiment(
     return fold_rows, test_rows, avg_rows
 
 
+def train_and_evaluate_validation_only(
+    train_val_df,
+    group_dir,
+    config,
+    feature_mode,
+    dynamic_threshold=True,
+    threshold_metric="f1",
+    n_splits=5,
+    random_state=123,
+    run_label="run_01",
+):
+    # Train five CV models and evaluate only on validation folds.
+    exp_dir = os.path.join(group_dir, config["name"])
+    os.makedirs(exp_dir, exist_ok=True)
+
+    folds = myFunction.stratified_group_kfold_only(
+        train_val_df, n_splits=n_splits, random_state=random_state
+    )
+
+    fold_rows = []
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    criterion = nn.BCELoss()
+
+    for fold_idx, (train_df_raw, val_df_raw) in enumerate(folds, start=1):
+        X_train, y_train, X_val, y_val, scaler, input_size = prepare_fold_data(
+            train_df_raw, val_df_raw, config, feature_mode
+        )
+
+        train_info = apply_train_info_config(TrainInfo(), config)
+        model = get_model(train_info, device, input_size=input_size)
+        optimizer = torch.optim.Adam(
+            model.parameters(),
+            lr=train_info.learning_rate,
+            weight_decay=getattr(train_info, "weight_decay", 1e-4),
+        )
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode="min", factor=0.5, patience=train_info.lr_patience
+        )
+
+        train_loader = DataLoader(
+            EstrusDataset(X_train, y_train),
+            train_info.batch_size,
+            shuffle=True,
+            drop_last=True,
+        )
+        val_loader = DataLoader(
+            EstrusDataset(X_val, y_val), train_info.batch_size, shuffle=False
+        )
+
+        model_path = os.path.join(exp_dir, f"best_model_fold{fold_idx}.pth")
+        scaler_path = os.path.join(exp_dir, f"scaler_fold{fold_idx}.joblib")
+        early_stopping = EarlyStopping(
+            patience=train_info.early_patience,
+            verbose=False,
+            path=model_path,
+        )
+
+        for _ in range(train_info.num_epochs):
+            model.train()
+            for batch_X, batch_y in train_loader:
+                batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+                optimizer.zero_grad()
+                loss = criterion(model(batch_X), batch_y)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+
+            val_metrics, _, _ = evaluate_model(model, val_loader, criterion, device)
+            scheduler.step(val_metrics["avg_loss"])
+            early_stopping(val_metrics["avg_loss"], model)
+            if early_stopping.early_stop:
+                break
+
+        model.load_state_dict(torch.load(model_path, weights_only=True))
+        joblib.dump(scaler, scaler_path)
+
+        val_metrics, _, _ = evaluate_model(
+            model,
+            val_loader,
+            criterion,
+            device,
+            optimize_threshold=dynamic_threshold,
+            threshold_metric=threshold_metric,
+        )
+        threshold = val_metrics.get("Threshold", 0.5)
+        if dynamic_threshold:
+            save_threshold(exp_dir, fold_idx, threshold)
+
+        val_metrics.pop("avg_loss", None)
+        fold_rows.append(
+            {
+                "Run": run_label,
+                "Seed": random_state,
+                **config_to_result_fields(config),
+                "Fold": f"Fold_{fold_idx}",
+                "Dataset": "Validation",
+                **val_metrics,
+            }
+        )
+
+    detail_df = pd.DataFrame(fold_rows)
+    detail_df.to_excel(os.path.join(exp_dir, "fold_details.xlsx"), index=False)
+
+    df = pd.DataFrame(fold_rows)
+    metric_cols = [
+        col
+        for col in df.columns
+        if col not in {"Run", "Seed", "Experiment", "Fold", "Dataset"}
+        and not col.startswith("param_")
+        and pd.api.types.is_numeric_dtype(df[col])
+    ]
+    avg = {col: df[col].mean() for col in metric_cols}
+    avg_rows = [
+        {
+            "Run": run_label,
+            "Seed": random_state,
+            **config_to_result_fields(config),
+            "Dataset": "Validation",
+            **avg,
+        }
+    ]
+    pd.DataFrame(avg_rows).to_excel(os.path.join(exp_dir, "summary.xlsx"), index=False)
+    return fold_rows, avg_rows
+
+
+def collect_model_predictions(model, loader, device):
+    model.eval()
+    all_probs = []
+    all_labels = []
+    with torch.no_grad():
+        for batch_X, batch_y in loader:
+            batch_X = batch_X.to(device)
+            outputs = model(batch_X)
+            all_probs.extend(outputs.cpu().numpy().flatten())
+            all_labels.extend(batch_y.cpu().numpy().flatten())
+    return np.asarray(all_labels).astype(int), np.asarray(all_probs)
+
+
+def compute_binary_metrics(labels, probs, threshold=0.5):
+    preds = (probs >= threshold).astype(int)
+    tn, fp, fn, tp = confusion_matrix(labels, preds, labels=[0, 1]).ravel()
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+    return {
+        "Threshold": float(threshold),
+        "Positive_Predictions": int(np.sum(preds == 1)),
+        "Prob_Min": float(np.min(probs)),
+        "Prob_Max": float(np.max(probs)),
+        "Prob_Mean": float(np.mean(probs)),
+        "Accuracy": accuracy_score(labels, preds),
+        "Precision": precision_score(labels, preds, zero_division=0),
+        "Recall": recall_score(labels, preds, zero_division=0),
+        "F1-Score": f1_score(labels, preds, zero_division=0),
+        "Specificity": specificity,
+        "AUC": roc_auc_score(labels, probs) if len(np.unique(labels)) > 1 else 0,
+        "MCC": matthews_corrcoef(labels, preds),
+        "TN": int(tn),
+        "FP": int(fp),
+        "FN": int(fn),
+        "TP": int(tp),
+    }
+
+
+def train_final_model_and_evaluate_test(
+    train_val_df,
+    test_df,
+    group_dir,
+    config,
+    feature_mode="temp_rate",
+    decision_threshold=0.5,
+    random_state=54,
+    run_label="final_train",
+):
+    # Train one final model on all train_val data and evaluate test once.
+    exp_dir = os.path.join(group_dir, config["name"])
+    os.makedirs(exp_dir, exist_ok=True)
+    set_seed(random_state)
+
+    X_train, y_train, scaler, input_size = prepare_final_train_data(
+        train_val_df, config, feature_mode
+    )
+    X_test, y_test = prepare_test_data(test_df, scaler, feature_mode)
+
+    train_info = apply_train_info_config(TrainInfo(), config)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = get_model(train_info, device, input_size=input_size)
+    criterion = nn.BCELoss()
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=train_info.learning_rate,
+        weight_decay=getattr(train_info, "weight_decay", 1e-4),
+    )
+
+    train_loader = DataLoader(
+        EstrusDataset(X_train, y_train),
+        train_info.batch_size,
+        shuffle=True,
+        drop_last=True,
+    )
+    test_loader = DataLoader(
+        EstrusDataset(X_test, y_test), train_info.batch_size, shuffle=False
+    )
+
+    history_rows = []
+    for epoch in range(1, train_info.num_epochs + 1):
+        model.train()
+        epoch_losses = []
+        for batch_X, batch_y in train_loader:
+            batch_X, batch_y = batch_X.to(device), batch_y.to(device)
+            optimizer.zero_grad()
+            loss = criterion(model(batch_X), batch_y)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            optimizer.step()
+            epoch_losses.append(loss.item())
+
+        history_rows.append(
+            {"Epoch": epoch, "Train_Loss": float(np.mean(epoch_losses))}
+        )
+
+    model_path = os.path.join(exp_dir, "final_model.pth")
+    scaler_path = os.path.join(exp_dir, "final_scaler.joblib")
+    torch.save(model.state_dict(), model_path)
+    joblib.dump(scaler, scaler_path)
+
+    labels, probs = collect_model_predictions(model, test_loader, device)
+    preds = (probs >= decision_threshold).astype(int)
+    metrics = compute_binary_metrics(labels, probs, threshold=decision_threshold)
+
+    pd.DataFrame(history_rows).to_excel(
+        os.path.join(exp_dir, "final_training_history.xlsx"), index=False
+    )
+    pd.DataFrame(
+        [
+            {
+                "Run": run_label,
+                "Seed": random_state,
+                **config_to_result_fields(config),
+                "Dataset": "Independent_Test",
+                **metrics,
+            }
+        ]
+    ).to_excel(os.path.join(exp_dir, "final_test_metrics.xlsx"), index=False)
+    pd.DataFrame(
+        {
+            "Sample_Index": np.arange(len(labels)),
+            "y_true": labels,
+            "y_prob": probs,
+            "y_pred": preds,
+            "Threshold": decision_threshold,
+        }
+    ).to_excel(os.path.join(exp_dir, "final_test_predictions.xlsx"), index=False)
+    pd.DataFrame([config]).to_excel(
+        os.path.join(exp_dir, "final_model_config.xlsx"), index=False
+    )
+
+    return exp_dir, metrics
+
+
 def run_config_set(
     train_val_df,
     test_df,
@@ -410,6 +697,7 @@ def run_config_set(
     threshold_metric="f1",
     run_repeats=1,
     base_random_state=DEFAULT_RANDOM_STATE,
+    specified_run_seeds=None,
 ):
     group_dir = make_experiment_dir(group_name)
     save_split_snapshot(group_dir, train_val_df, test_df)
@@ -424,7 +712,11 @@ def run_config_set(
         config["name"] = f"{config['experiment_id']}_{config['name']}"
         prepared_configs.append(config)
 
-    run_seeds = generate_run_seeds(run_repeats, base_random_state)
+    if specified_run_seeds is not None:
+        run_seeds = specified_run_seeds
+        run_repeats = len(run_seeds)
+    else:
+        run_seeds = generate_run_seeds(run_repeats, base_random_state)
     pd.DataFrame(
         [
             {"Run": f"run_{idx:02d}", "Seed": seed}
@@ -491,6 +783,167 @@ def grid_configs(base_config, param_grid):
     return configs
 
 
+def add_dynamic_threshold_variants(configs):
+    """
+    为每组超参数生成动态阈值关闭/开启两个版本，便于直接对比
+    """
+    expanded_configs = []
+    for config in configs:
+        for enabled in [False, True]:
+            new_config = config.copy()
+            new_config["dynamic_threshold"] = enabled
+            new_config["name"] = (
+                f"{config.get('name', 'config')}_DT_{'on' if enabled else 'off'}"
+            )
+            expanded_configs.append(new_config)
+    return expanded_configs
+
+
+def _normalize_search_space(search_space):
+    normalized = {}
+    for key, values in search_space.items():
+        if not isinstance(values, (list, tuple)) or len(values) == 0:
+            raise ValueError(f"search_space['{key}'] must be a non-empty list.")
+        normalized[key] = list(values)
+    return normalized
+
+
+def _all_index_points(search_space, tunable_keys):
+    index_ranges = [range(len(search_space[key])) for key in tunable_keys]
+    return [tuple(point) for point in itertools.product(*index_ranges)]
+
+
+def _point_to_config_values(point, search_space, tunable_keys, fixed_values):
+    config_values = fixed_values.copy()
+    for key, index in zip(tunable_keys, point):
+        value = search_space[key][int(index)]
+        if key == "hidden_sizes":
+            value = list(value)
+        config_values[key] = value
+    return config_values
+
+
+def run_bayesian_config_set(
+    train_val_df,
+    test_df,
+    group_name,
+    base_config,
+    search_space,
+    feature_mode,
+    dynamic_threshold_rule,
+    threshold_metric="f1",
+    n_calls=12,
+    n_initial_points=4,
+    run_seed=54,
+    save_every=5,
+):
+    # Bayesian optimization over user-defined discrete candidate values.
+    try:
+        from skopt import Optimizer
+        from skopt.space import Categorical
+    except ImportError as exc:
+        raise ImportError(
+            "experiment_7 requires scikit-optimize. Install it with: "
+            "pip install scikit-optimize"
+        ) from exc
+
+    search_space = _normalize_search_space(search_space)
+    fixed_values = {
+        key: values[0] for key, values in search_space.items() if len(values) == 1
+    }
+    tunable_keys = [key for key, values in search_space.items() if len(values) > 1]
+    if not tunable_keys:
+        raise ValueError(
+            "At least one search_space entry must contain multiple values."
+        )
+
+    all_points = _all_index_points(search_space, tunable_keys)
+    max_calls = min(n_calls, len(all_points))
+    dimensions = [
+        Categorical(list(range(len(search_space[key]))), name=key)
+        for key in tunable_keys
+    ]
+    optimizer = Optimizer(
+        dimensions=dimensions,
+        base_estimator="GP",
+        n_initial_points=min(n_initial_points, max_calls),
+        random_state=run_seed,
+    )
+
+    group_dir = make_experiment_dir(group_name)
+    save_split_snapshot(group_dir, train_val_df, test_df)
+    pd.DataFrame([{"Run": "run_01", "Seed": run_seed}]).to_excel(
+        os.path.join(group_dir, "run_seeds.xlsx"), index=False
+    )
+    pd.DataFrame(
+        [
+            {
+                "Parameter": key,
+                "Candidate_Values": json.dumps(values, ensure_ascii=False),
+            }
+            for key, values in search_space.items()
+        ]
+    ).to_excel(os.path.join(group_dir, "bayesian_search_space.xlsx"), index=False)
+
+    set_seed(run_seed)
+    evaluated_points = set()
+    all_details = []
+    all_summaries = []
+
+    for iteration in range(1, max_calls + 1):
+        point = tuple(optimizer.ask())
+        if point in evaluated_points:
+            remaining_points = [p for p in all_points if p not in evaluated_points]
+            if not remaining_points:
+                break
+            point = remaining_points[0]
+        evaluated_points.add(point)
+
+        config = base_config.copy()
+        config.update(
+            _point_to_config_values(point, search_space, tunable_keys, fixed_values)
+        )
+        config["experiment_id"] = f"BO{iteration:03d}"
+        config["bayes_iteration"] = iteration
+        config["name"] = f"BiLSTM_BO_{iteration:03d}"
+
+        dynamic_threshold = dynamic_threshold_rule(config)
+        fold_rows, test_rows, avg_rows = train_and_evaluate_experiment(
+            train_val_df=train_val_df,
+            test_df=test_df,
+            group_dir=group_dir,
+            config=config,
+            feature_mode=feature_mode,
+            dynamic_threshold=dynamic_threshold,
+            threshold_metric=threshold_metric,
+            random_state=run_seed,
+            run_label="run_01",
+        )
+
+        all_details.extend(fold_rows)
+        all_details.extend(test_rows)
+        all_summaries.extend(avg_rows)
+
+        val_row = next(row for row in avg_rows if row["Dataset"] == "Validation")
+        score = (
+            float(val_row.get("F1-Score", 0.0))
+            + 1e-3 * float(val_row.get("AUC", 0.0))
+            + 1e-6 * float(val_row.get("Recall", 0.0))
+        )
+        optimizer.tell(list(point), -score)
+
+        should_save = (iteration % save_every == 0) or (iteration == max_calls)
+        if should_save:
+            pd.DataFrame(all_details).to_excel(
+                os.path.join(group_dir, "all_experiments_cv_details.xlsx"), index=False
+            )
+            pd.DataFrame(all_summaries).to_excel(
+                os.path.join(group_dir, "final_summary.xlsx"), index=False
+            )
+
+    return group_dir
+
+
 def parse_hidden_sizes(value):
     if isinstance(value, list):
         return [int(item) for item in value]
@@ -503,6 +956,41 @@ def parse_bool(value):
     if isinstance(value, bool):
         return value
     return str(value).lower() == "true"
+
+
+def load_bayesian_configs_from_summary(summary_path):
+    # Replay the exact hyperparameter combinations selected in a previous BO run.
+    summary_df = pd.read_excel(summary_path)
+    val_df = summary_df[summary_df["Dataset"] == "Validation"].copy()
+    val_df["param_bayes_iteration"] = pd.to_numeric(
+        val_df["param_bayes_iteration"], errors="coerce"
+    )
+    val_df = val_df.dropna(subset=["param_bayes_iteration"])
+    val_df["param_bayes_iteration"] = val_df["param_bayes_iteration"].astype(int)
+    val_df = val_df.sort_values("param_bayes_iteration")
+
+    configs = []
+    for _, row in val_df.iterrows():
+        iteration = int(row["param_bayes_iteration"])
+        config = {
+            "name": f"BiLSTM_BO_{iteration:03d}_DT_on",
+            "experiment_id": f"BO{iteration:03d}",
+            "bayes_iteration": iteration,
+            "A": True,
+            "S": True,
+            "T": True,
+            "model_name": "EstrusLSTM",
+            "bidirectional": True,
+            "use_cell_state": False,
+            "hidden_sizes": parse_hidden_sizes(row["param_hidden_sizes"]),
+            "batch_size": int(row["param_batch_size"]),
+            "dropout_rate": float(row["param_dropout_rate"]),
+            "learning_rate": float(row["param_learning_rate"]),
+            "weight_decay": float(row["param_weight_decay"]),
+            "dynamic_threshold": True,
+        }
+        configs.append(config)
+    return configs
 
 
 def select_best_bilstm_config(group_dir):
@@ -566,20 +1054,23 @@ def experiment_1_bilstm_ast_structure_tuning(train_val_df, test_df):
             [64, 64, 64, 64],
             [128, 128, 64, 32],
         ],
-        "learning_rate": [5e-4, 1e-3],
+        "learning_rate": [5e-4],
         "dropout_rate": [0.2],
         "batch_size": [32],
     }
-    configs = grid_configs(base_config, param_grid)
+    configs = add_dynamic_threshold_variants(grid_configs(base_config, param_grid))
     group_dir = run_config_set(
         train_val_df,
         test_df,
         "01_bilstm_ast_structure_tuning",
         configs,
         feature_mode="temp_rate",
-        dynamic_threshold_rule=lambda config: True,
+        dynamic_threshold_rule=lambda config: bool(
+            config.get("dynamic_threshold", False)
+        ),
         threshold_metric="f1",
         run_repeats=1,
+        specified_run_seeds=[54],
     )
     return select_best_bilstm_config(group_dir)
 
@@ -602,7 +1093,7 @@ def experiment_2_aug_ablation_bilstm_no_tuning(
         bilstm_config.update(best_bilstm_config)
 
     configs = []
-    for config in augmentation_configs(include_ast=False):
+    for config in augmentation_configs(include_ast=True):
         config.update(bilstm_config)
         configs.append(config)
     return run_config_set(
@@ -613,6 +1104,7 @@ def experiment_2_aug_ablation_bilstm_no_tuning(
         feature_mode="temp_rate",
         dynamic_threshold_rule=lambda config: False,
         run_repeats=REPEATED_RUNS,
+        # specified_run_seeds=[54],
     )
 
 
@@ -632,8 +1124,8 @@ def experiment_3_model_comparison_ast(train_val_df, test_df):
     configs = [
         {
             **base,
-            "name": "RNN_sample",
-            "model_name": "EstrusRNN_sample",
+            "name": "RNN",
+            "model_name": "EstrusRNN",
             "bidirectional": False,
         },
         {
@@ -648,6 +1140,12 @@ def experiment_3_model_comparison_ast(train_val_df, test_df):
             "model_name": "EstrusGRU",
             "bidirectional": False,
         },
+        {
+            **base,
+            "name": "BiLSTM",
+            "model_name": "EstrusLSTM",
+            "bidirectional": True,
+        },
     ]
     return run_config_set(
         train_val_df,
@@ -656,8 +1154,146 @@ def experiment_3_model_comparison_ast(train_val_df, test_df):
         configs,
         feature_mode="temp_rate",
         dynamic_threshold_rule=lambda config: False,
-        run_repeats=REPEATED_RUNS,
+        # run_repeats=REPEATED_RUNS,
+        specified_run_seeds=[54],
     )
+
+
+def experiment_3_final_model_comparison_ast(
+    train_val_df,
+    test_df,
+    model_configs=None,
+    run_repeats=1,
+    base_random_state=DEFAULT_RANDOM_STATE,
+    specified_run_seeds=None,
+):
+    # Final test comparison against the selected BiLSTM result.
+    # These models use the same selected training hyperparameters as BiLSTM.
+    selected_base = {
+        "A": True,
+        "S": True,
+        "T": True,
+        "hidden_sizes": [64, 64, 32],
+        "learning_rate": 5e-4,
+        "dropout_rate": 0.2,
+        "batch_size": 32,
+        "weight_decay": 1e-4,
+        "use_cell_state": False,
+        "dynamic_threshold": False,
+    }
+    if model_configs is None:
+        model_configs = [
+            {
+                **selected_base,
+                "name": "Final_RNN_AST",
+                "model_name": "EstrusRNN",
+                "bidirectional": False,
+            },
+            {
+                **selected_base,
+                "name": "Final_LSTM_AST",
+                "model_name": "EstrusLSTM",
+                "bidirectional": False,
+            },
+            {
+                **selected_base,
+                "name": "Final_GRU_AST",
+                "model_name": "EstrusGRU",
+                "bidirectional": False,
+            },
+        ]
+
+    group_dir = make_experiment_dir("03_final_model_comparison_ast")
+    save_split_snapshot(group_dir, train_val_df, test_df)
+
+    if specified_run_seeds is not None:
+        run_seeds = specified_run_seeds
+        run_repeats = len(run_seeds)
+    else:
+        run_seeds = generate_run_seeds(run_repeats, base_random_state)
+
+    pd.DataFrame(
+        [
+            {"Run": f"run_{idx:02d}", "Seed": seed}
+            for idx, seed in enumerate(run_seeds, start=1)
+        ]
+    ).to_excel(os.path.join(group_dir, "run_seeds.xlsx"), index=False)
+
+    result_rows = []
+    for run_idx, run_seed in enumerate(run_seeds, start=1):
+        run_label = f"run_{run_idx:02d}"
+        run_dir = os.path.join(group_dir, run_label) if run_repeats > 1 else group_dir
+        os.makedirs(run_dir, exist_ok=True)
+
+        for config in model_configs:
+            exp_dir, metrics = train_final_model_and_evaluate_test(
+                train_val_df=train_val_df,
+                test_df=test_df,
+                group_dir=run_dir,
+                config=config,
+                feature_mode="temp_rate",
+                decision_threshold=0.5,
+                random_state=run_seed,
+                run_label=run_label,
+            )
+            result_rows.append(
+                {
+                    "Run": run_label,
+                    "Seed": run_seed,
+                    "Experiment_Dir": exp_dir,
+                    **config_to_result_fields(config),
+                    **metrics,
+                }
+            )
+
+    result_df = pd.DataFrame(result_rows)
+    result_df.to_excel(
+        os.path.join(group_dir, "final_model_comparison_test_summary.xlsx"),
+        index=False,
+    )
+
+    if len(run_seeds) > 1:
+        metric_cols = [
+            col
+            for col in result_df.columns
+            if col
+            not in {
+                "Run",
+                "Seed",
+                "Experiment_Dir",
+                "Experiment",
+            }
+            and not col.startswith("param_")
+            and pd.api.types.is_numeric_dtype(result_df[col])
+        ]
+        group_cols = [
+            col
+            for col in result_df.columns
+            if col == "Experiment" or col.startswith("param_")
+        ]
+        summary_rows = []
+        for group_values, group_df in result_df.groupby(group_cols, dropna=False):
+            if not isinstance(group_values, tuple):
+                group_values = (group_values,)
+            base_row = dict(zip(group_cols, group_values))
+            for metric in metric_cols:
+                metric_mean = group_df[metric].mean()
+                metric_std = group_df[metric].std(ddof=1)
+                summary_rows.append(
+                    {
+                        **base_row,
+                        "Metric": metric,
+                        "Mean": metric_mean,
+                        "Std": metric_std,
+                        "Mean_Std": f"{metric_mean:.4f} +/- {metric_std:.4f}",
+                    }
+                )
+        pd.DataFrame(summary_rows).to_excel(
+            os.path.join(group_dir, "final_model_comparison_metric_mean_std.xlsx"),
+            index=False,
+        )
+
+    return group_dir
 
 
 def experiment_4_temp_only_aug_ablation_bilstm(train_val_df, test_df):
@@ -683,22 +1319,22 @@ def experiment_4_temp_only_aug_ablation_bilstm(train_val_df, test_df):
         "04_temp_only_aug_ablation_bilstm",
         configs,
         feature_mode="temp_only",
-        dynamic_threshold_rule=lambda config: bool(
-            config.get("A") and config.get("S") and config.get("T")
-        ),
+        # dynamic_threshold_rule=lambda config: bool(config.get("A") and config.get("S") and config.get("T")),
+        dynamic_threshold_rule=lambda config: False,
         threshold_metric="f1",
         run_repeats=REPEATED_RUNS,
     )
 
 
 def experiment_5_smote_ratio_ast(train_val_df, test_df, best_bilstm_config=None):
-    # Experiment 5: keep AST enabled and sweep SMOTE oversampling from 3x to 10x.
+    # Experiment 5: keep AST enabled and sweep SMOTE oversampling from 1x to 10x.
     bilstm_config = {
         "model_name": "EstrusLSTM",
-        "hidden_sizes": [64, 64, 64, 64],
-        "learning_rate": 5e-4,
-        "dropout_rate": 0.2,
-        "batch_size": 32,
+        "hidden_sizes": [64, 64, 32],
+        "learning_rate": 2e-4,
+        "dropout_rate": 0.3,
+        "batch_size": 64,
+        "weight_decay": 1e-5,
         "bidirectional": True,
         "use_cell_state": False,
     }
@@ -706,7 +1342,7 @@ def experiment_5_smote_ratio_ast(train_val_df, test_df, best_bilstm_config=None)
         bilstm_config.update(best_bilstm_config)
 
     configs = []
-    for ratio in range(3, 11):
+    for ratio in range(1, 11):
         config = {
             "name": f"SMOTE_{ratio}x",
             "A": True,
@@ -723,14 +1359,255 @@ def experiment_5_smote_ratio_ast(train_val_df, test_df, best_bilstm_config=None)
         configs,
         feature_mode="temp_rate",
         dynamic_threshold_rule=lambda config: False,
-        run_repeats=REPEATED_RUNS,
+        run_repeats=1,
     )
+
+
+def experiment_6_bilistm_ast_structure_tuning_(train_val_df, test_df):
+    # Experiment 6: tune the structure of the BiLSTM model with AST features.
+    base_config = {
+        "A": True,
+        "S": True,
+        "T": True,
+        "model_name": "EstrusLSTM",
+        "bidirectional": True,
+        "use_cell_state": False,
+    }
+    param_grid = {
+        "hidden_sizes": [
+            [64, 64, 32],
+            [64, 64, 64, 64],
+            [128, 128, 64, 32],
+        ],
+        "learning_rate": [0.1, 0.01, 0.001, 0.0007, 0.0005, 0.0003, 0.0001],
+        "dropout_rate": [0.1, 0.2, 0.3],
+        "batch_size": [32],
+    }
+    configs = add_dynamic_threshold_variants(grid_configs(base_config, param_grid))
+    group_dir = run_config_set(
+        train_val_df,
+        test_df,
+        "06_bilstm_ast_structure_tuning_",
+        configs,
+        feature_mode="temp_rate",
+        dynamic_threshold_rule=lambda config: bool(
+            config.get("dynamic_threshold", False)
+        ),
+        threshold_metric="f1",
+        run_repeats=1,
+        specified_run_seeds=[54],
+    )
+    return select_best_bilstm_config(group_dir)
+
+
+def experiment_7_bilstm_ast_bayesian_tuning(train_val_df, test_df):
+    # Experiment 7: Bayesian optimization over specified BiLSTM candidates.
+    # Edit search_space and n_calls to control the candidate set and budget.
+    base_config = {
+        "A": True,
+        "S": True,
+        "T": True,
+        "model_name": "EstrusLSTM",
+        "bidirectional": True,
+        "use_cell_state": False,
+    }
+    search_space = {
+        "hidden_sizes": [
+            [32, 32],
+            [64, 32],
+            [64, 64],
+            [64, 64, 32],
+            [128, 64, 32],
+            [64, 64, 64, 64],
+            [128, 128, 64, 32],
+        ],
+        "learning_rate": [1e-4, 2e-4, 3e-4, 5e-4, 7e-4, 1e-3, 2e-3],
+        "dropout_rate": [0.1, 0.2, 0.3, 0.4],
+        "batch_size": [16, 32, 64],
+        "weight_decay": [0.0, 1e-5, 1e-4, 5e-4, 1e-3],
+        # Change this to [False, True] if you also want BO to compare threshold modes.
+        "dynamic_threshold": [False],
+    }
+    group_dir = run_bayesian_config_set(
+        train_val_df=train_val_df,
+        test_df=test_df,
+        group_name="07_bilstm_ast_bayesian_tuning",
+        base_config=base_config,
+        search_space=search_space,
+        feature_mode="temp_rate",
+        dynamic_threshold_rule=lambda config: bool(
+            config.get("dynamic_threshold", False)
+        ),
+        threshold_metric="f1",
+        n_calls=60,
+        n_initial_points=12,
+        run_seed=54,
+    )
+    return select_best_bilstm_config(group_dir)
+
+
+def experiment_8_replay_bayesian_configs_with_dynamic_threshold(train_val_df):
+    # Replay the BO-selected hyperparameters from experiment 7 with dynamic threshold.
+    # Only validation folds are evaluated; the independent test set is not touched.
+    source_summary_path = os.path.join(
+        ALL_EXPERIMENTS_ROOT,
+        "07_bilstm_ast_bayesian_tuning_2026_0701_2159",
+        "final_summary.xlsx",
+    )
+    configs = load_bayesian_configs_from_summary(source_summary_path)
+
+    group_dir = make_experiment_dir("08_bilstm_ast_bayes_replay_dynamic_threshold")
+    train_val_df.to_excel(os.path.join(group_dir, "train_val_df.xlsx"), index=False)
+    pd.DataFrame(
+        [{"Source_Final_Summary": source_summary_path, "Config_Count": len(configs)}]
+    ).to_excel(os.path.join(group_dir, "source_summary.xlsx"), index=False)
+    pd.DataFrame([{"Run": "run_01", "Seed": 54}]).to_excel(
+        os.path.join(group_dir, "run_seeds.xlsx"), index=False
+    )
+
+    run_seed = 54
+    set_seed(run_seed)
+    all_details = []
+    all_summaries = []
+
+    for config in configs:
+        fold_rows, avg_rows = train_and_evaluate_validation_only(
+            train_val_df=train_val_df,
+            group_dir=group_dir,
+            config=config,
+            feature_mode="temp_rate",
+            dynamic_threshold=True,
+            threshold_metric="f1",
+            random_state=run_seed,
+            run_label="run_01",
+        )
+        all_details.extend(fold_rows)
+        all_summaries.extend(avg_rows)
+
+        pd.DataFrame(all_details).to_excel(
+            os.path.join(group_dir, "all_experiments_cv_details.xlsx"), index=False
+        )
+        pd.DataFrame(all_summaries).to_excel(
+            os.path.join(group_dir, "final_summary.xlsx"), index=False
+        )
+
+    return select_best_bilstm_config(group_dir)
+
+
+def experiment_9_train_final_model_and_evaluate_test(
+    train_val_df,
+    test_df,
+    run_repeats=1,
+    base_random_state=DEFAULT_RANDOM_STATE,
+    specified_run_seeds=None,
+):
+    # Final evaluation: train one model on all train_val data and test once.
+    # Set best_config_path to the selected best_bilstm_config.json if available.
+    best_config_path = None
+    final_config = {
+        "name": "Final_BiLSTM_AST",
+        "A": True,
+        "S": True,
+        "T": True,
+        "model_name": "EstrusLSTM",
+        "hidden_sizes": [64, 64, 32],
+        "learning_rate": 5e-4,
+        "dropout_rate": 0.2,
+        "batch_size": 32,
+        "weight_decay": 1e-4,
+        "bidirectional": True,
+        "use_cell_state": False,
+        "dynamic_threshold": False,
+    }
+    if best_config_path:
+        with open(best_config_path, "r", encoding="utf-8") as f:
+            final_config.update(json.load(f))
+        final_config["name"] = "Final_BiLSTM_AST"
+
+    group_dir = make_experiment_dir("09_final_model_test_evaluation")
+    save_split_snapshot(group_dir, train_val_df, test_df)
+
+    if specified_run_seeds is not None:
+        run_seeds = specified_run_seeds
+        run_repeats = len(run_seeds)
+    else:
+        run_seeds = generate_run_seeds(run_repeats, base_random_state)
+
+    pd.DataFrame(
+        [
+            {"Run": f"run_{idx:02d}", "Seed": seed}
+            for idx, seed in enumerate(run_seeds, start=1)
+        ]
+    ).to_excel(os.path.join(group_dir, "run_seeds.xlsx"), index=False)
+
+    result_rows = []
+    exp_dirs = []
+    for run_idx, run_seed in enumerate(run_seeds, start=1):
+        run_label = f"run_{run_idx:02d}"
+        run_dir = os.path.join(group_dir, run_label) if run_repeats > 1 else group_dir
+        os.makedirs(run_dir, exist_ok=True)
+
+        exp_dir, metrics = train_final_model_and_evaluate_test(
+            train_val_df=train_val_df,
+            test_df=test_df,
+            group_dir=run_dir,
+            config=final_config,
+            feature_mode="temp_rate",
+            decision_threshold=0.5,
+            random_state=run_seed,
+            run_label=run_label,
+        )
+        exp_dirs.append(exp_dir)
+        result_rows.append(
+            {
+                "Run": run_label,
+                "Seed": run_seed,
+                "Experiment_Dir": exp_dir,
+                **config_to_result_fields(final_config),
+                **metrics,
+            }
+        )
+
+    result_df = pd.DataFrame(result_rows)
+    result_df.to_excel(
+        os.path.join(group_dir, "final_test_result_summary.xlsx"), index=False
+    )
+
+    metric_cols = [
+        col
+        for col in result_df.columns
+        if col
+        not in {
+            "Run",
+            "Seed",
+            "Experiment_Dir",
+            "Experiment",
+        }
+        and not col.startswith("param_")
+        and pd.api.types.is_numeric_dtype(result_df[col])
+    ]
+    summary_rows = []
+    for metric in metric_cols:
+        metric_mean = result_df[metric].mean()
+        metric_std = result_df[metric].std(ddof=1)
+        summary_rows.append(
+            {
+                "Metric": metric,
+                "Mean": metric_mean,
+                "Std": metric_std,
+                "Mean_Std": f"{metric_mean:.4f} ± {metric_std:.4f}",
+            }
+        )
+    pd.DataFrame(summary_rows).to_excel(
+        os.path.join(group_dir, "final_test_metric_mean_std.xlsx"), index=False
+    )
+    return exp_dirs
 
 
 def main():
     # The fixed split makes the independent test set identical for every group.
     # Repeated runs only change the train/validation fold seed.
-    set_seed(123)
+    set_seed(DEFAULT_RANDOM_STATE)
     os.makedirs(ALL_EXPERIMENTS_ROOT, exist_ok=True)
 
     df = load_source_df()
@@ -738,15 +1615,33 @@ def main():
 
     # Run the five experiment groups in the order described in the manuscript plan.
     best_bilstm_config = None
-    best_bilstm_config = experiment_1_bilstm_ast_structure_tuning(train_val_df, test_df)
-    experiment_2_aug_ablation_bilstm_no_tuning(
+    # best_bilstm_config = experiment_1_bilstm_ast_structure_tuning(train_val_df, test_df)
+
+    """ experiment_2_aug_ablation_bilstm_no_tuning(
         train_val_df, test_df, best_bilstm_config=best_bilstm_config
+    ) """
+
+    # experiment_3_model_comparison_ast(train_val_df, test_df)
+
+    experiment_3_final_model_comparison_ast(
+        train_val_df, test_df, specified_run_seeds=[676, 211, 443, 616, 558, 59, 131]
     )
-    experiment_3_model_comparison_ast(train_val_df, test_df)
-    experiment_4_temp_only_aug_ablation_bilstm(train_val_df, test_df)
-    experiment_5_smote_ratio_ast(
+
+    # experiment_4_temp_only_aug_ablation_bilstm(train_val_df, test_df)
+
+    """ experiment_5_smote_ratio_ast(
         train_val_df, test_df, best_bilstm_config=best_bilstm_config
-    )
+    ) """
+
+    # experiment_6_bilistm_ast_structure_tuning_(train_val_df, test_df)
+
+    # experiment_7_bilstm_ast_bayesian_tuning(train_val_df, test_df)
+
+    # experiment_8_replay_bayesian_configs_with_dynamic_threshold(train_val_df)
+
+    """ experiment_9_train_final_model_and_evaluate_test(
+        train_val_df, test_df, specified_run_seeds=[676, 211, 443, 616, 558, 59, 131]
+    ) """
 
 
 if __name__ == "__main__":

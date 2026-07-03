@@ -570,8 +570,7 @@ def stratified_group_split(df, train_ratio=0.7, val_ratio=0.1, test_ratio=0.2):
 def split_dataset_train_val_test(df, test_ratio=0.2, random_state=123):
     """
     新增：将数据集先划分为训练用（训练集+验证集）和独立测试用。
-    保证同一母猪数据不会跨越集合，并保持发情与非发情猪比例。
-    建议可以在外部调用并将返回的数据集分别保存，以便之后重复读取使用。
+    保持发情与非发情猪比例。
     """
     estrus_sows = df[df["isEstrus"] == 1]["sSowsNo"].unique()
     all_sows = df["sSowsNo"].unique()
@@ -1178,9 +1177,10 @@ def ADASYN(threshold, gamma, df_min: pd.DataFrame, df_maj: pd.DataFrame, k=7):
         # 确保类型转换
         df_augmented[df_min.columns[0]] = df_augmented[df_min.columns[0]].astype(str)
         df_augmented[df_min.columns[-1]] = df_augmented[df_min.columns[-1]].astype(int)
+
+        print(f"{"-"*60} ADASYN 过采样个数: {len(X_syn)} {"-"*60}")
         return df_augmented
 
-    print(f"{"-"*60} ADASYN 过采样个数: {len(df_min) - count_min} {"-"*60}")
     return pd.concat([df_min, df_maj], axis=0)
 
 

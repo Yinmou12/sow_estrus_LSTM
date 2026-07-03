@@ -100,20 +100,26 @@ def find_best_threshold(labels, probs, metric="f1", thresholds=None):
     for threshold in thresholds:
         preds = (probs >= threshold).astype(int)
         tn, fp, fn, tp = confusion_matrix(labels, preds, labels=[0, 1]).ravel()
+        accuracy = accuracy_score(labels, preds)
         precision = precision_score(labels, preds, zero_division=0)
         recall = recall_score(labels, preds, zero_division=0)
         specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
         f1 = f1_score(labels, preds, zero_division=0)
+        auc = accuracy_score(labels, probs)
         mcc = matthews_corrcoef(labels, preds)
 
-        if metric == "recall":
+        if metric == "accuracy":
+            score = accuracy
+        elif metric == "precision":
+            score = precision
+        elif metric == "recall":
             score = recall
         elif metric == "specificity":
             score = specificity
         elif metric == "balanced_accuracy":
             score = (recall + specificity) / 2
-        elif metric == "youden":
-            score = recall + specificity - 1
+        elif metric == "auc":
+            score = auc
         elif metric == "mcc":
             score = mcc
         else:
@@ -133,7 +139,7 @@ def evaluate_model(
     device,
     threshold=0.5,
     optimize_threshold=False,
-    threshold_metric="recall",
+    threshold_metric="f1",
 ):
     model.eval()
     total_loss = 0
