@@ -1,7 +1,10 @@
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 
 from matplotlib.patches import Circle
+
+IMAGE_SAVE_PATH = "D:\\_\u8bba\u6587\\Bi-LSTM\\pictures"
 
 
 def plot_AST_horizontal():

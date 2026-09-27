@@ -8,14 +8,27 @@ from plotter.plotter_AST import (
 )
 from plotter.plotter_BO import plot_bayesian_convergence_figures
 from plotter.plotter_bayesian_heatmap import plot_hidden_sizes_learning_rate_f1_heatmap
-from plotter.plotter_final_eval import plot_final_test_evaluation_figures
+from plotter.plotter_final_eval import (
+    plot_final_test_evaluation_figures,
+    plot_combined_final_test_roc_curves,
+)
 
 IMAGE_SAVE_PATH = "D:\\_\u8bba\u6587\\Bi-LSTM\\pictures"
 
 BO_EXPERIMENT_DIR = None
 BO_HEATMAP_EXPERIMENT_DIR = r"D:\_Software_Projects\VSCode\scientific_research\sow_estrus\my_code\result\all_experiments\07_bilstm_ast_bayesian_tuning_2026_0701_2159"
 MARK_BEST_IN_HEATMAP = False
-FINAL_EVAL_EXPERIMENT_DIR = r"D:\_Software_Projects\VSCode\scientific_research\sow_estrus\my_code\result\all_experiments\03_final_model_comparison_ast_2026_0703_1323\run_05\Final_RNN_AST"
+FINAL_EVAL_EXPERIMENT_DIR = r"D:\_Software_Projects\VSCode\scientific_research\sow_estrus\my_code\result\all_experiments\03_final_model_comparison_ast_2026_0703_1323\run_07\Final_RNN_AST"
+COMBINED_FINAL_ROC_EXPERIMENT_DIRS = None
+COMBINED_FINAL_ROC_OUTPUT_DIR = r"D:\_Software_Projects\VSCode\scientific_research\sow_estrus\my_code\result\all_experiments\figures\combined_final_test_roc_05"
+
+# To manually specify four curves, replace None above with a dict like this:
+COMBINED_FINAL_ROC_EXPERIMENT_DIRS = {
+    "BiLSTM": r"D:\_Software_Projects\VSCode\scientific_research\sow_estrus\my_code\result\all_experiments\09_final_model_test_evaluation_2026_0703_1221\run_05\Final_BiLSTM_AST",
+    "LSTM": r"D:\_Software_Projects\VSCode\scientific_research\sow_estrus\my_code\result\all_experiments\03_final_model_comparison_ast_2026_0703_1323\run_05\Final_LSTM_AST",
+    "GRU": r"D:\_Software_Projects\VSCode\scientific_research\sow_estrus\my_code\result\all_experiments\03_final_model_comparison_ast_2026_0703_1323\run_05\Final_GRU_AST",
+    "RNN": r"D:\_Software_Projects\VSCode\scientific_research\sow_estrus\my_code\result\all_experiments\03_final_model_comparison_ast_2026_0703_1323\run_05\Final_RNN_AST",
+}
 
 
 def draw_bayesian_convergence():
@@ -39,10 +52,20 @@ def draw_final_test_evaluation():
         print(f"Saved: {output_path}")
 
 
+def draw_combined_final_test_roc():
+    output_paths = plot_combined_final_test_roc_curves(
+        experiment_dirs=COMBINED_FINAL_ROC_EXPERIMENT_DIRS,
+        output_dir=COMBINED_FINAL_ROC_OUTPUT_DIR,
+    )
+    for output_path in output_paths:
+        print(f"Saved: {output_path}")
+
+
 if __name__ == "__main__":
     # Uncomment the figures you want to generate.
     # draw_bayesian_convergence()
     # draw_final_test_evaluation()
+    draw_combined_final_test_roc()
     # draw_bayesian_hidden_lr_heatmap()
 
     # plot_AST_horizontal()

@@ -72,19 +72,23 @@ class __train_info:
 # 数据准备类
 class EstrusDataset(Dataset):
     def __init__(self, X, y):
+        """初始化当前对象并保存后续计算需要的参数。"""
         if X.ndim == 2:
             X = X[:, :, np.newaxis]  # 添加特征维度，变为 (samples, seq_len, features)
         self.X = torch.tensor(X, dtype=torch.float32)
         self.y = torch.tensor(y, dtype=torch.float32).unsqueeze(1)
 
     def __len__(self):
+        """返回数据集的样本数量。"""
         return len(self.y)
 
     def __getitem__(self, idx):
+        """按位置返回一个样本张量及其标签。"""
         return self.X[idx], self.y[idx]
 
 
 def find_best_threshold(labels, probs, metric="f1", thresholds=None):
+    """在候选阈值中优化分类指标；F1平局优先最接近0.5，再取较小阈值。"""
     labels = np.asarray(labels).astype(int)
     probs = np.asarray(probs)
 
@@ -105,7 +109,7 @@ def find_best_threshold(labels, probs, metric="f1", thresholds=None):
         recall = recall_score(labels, preds, zero_division=0)
         specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
         f1 = f1_score(labels, preds, zero_division=0)
-        auc = accuracy_score(labels, probs)
+        auc = roc_auc_score(labels, probs)
         mcc = matthews_corrcoef(labels, preds)
 
         if metric == "accuracy":
@@ -125,7 +129,7 @@ def find_best_threshold(labels, probs, metric="f1", thresholds=None):
         else:
             score = f1
 
-        if score > best_score:
+        if score > best_score or (score == best_score and (round(abs(float(threshold) - 0.5), 12), float(threshold)) < (round(abs(best_threshold - 0.5), 12), best_threshold)):
             best_score = score
             best_threshold = float(threshold)
 
@@ -141,6 +145,7 @@ def evaluate_model(
     optimize_threshold=False,
     threshold_metric="f1",
 ):
+    """在评估模式收集概率并计算损失和分类指标，可在验证数据优化阈值。"""
     model.eval()
     total_loss = 0
     all_raw_probs = []
@@ -202,6 +207,7 @@ def evaluate_model(
 
 
 def load_combined_dataset(file_name, num_features=2):
+    """读取历史展开数据表并还原为时序张量及标签。"""
     df = pd.read_excel(file_name, index_col=False)
     y = df["label_isEstrus"].values
 
@@ -215,6 +221,7 @@ def load_combined_dataset(file_name, num_features=2):
 
 
 def get_model(train_info, device, input_size=None):
+    """根据TrainInfo构造指定循环网络并放置到目标设备。"""
     from lstm_model import (
         EstrusLSTM,
         EstrusLSTM_Attn,
@@ -307,6 +314,7 @@ def get_model(train_info, device, input_size=None):
 
 
 def main():
+    """执行main流程；参数及返回结果沿用该接口既有约定。"""
     train_info = __train_info()
     saved_file_path = train_info.saved_file_path
     num_feature = train_info.num_feature

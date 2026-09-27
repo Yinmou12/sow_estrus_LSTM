@@ -316,10 +316,17 @@ def data_processing(
     resampling_method="mean",
     del_code=[],  # 要删除数据的编号
 ):
+    """
+    发情母猪：
+        根据 time_choice 保留对应时间段的 48h 数据
+
+    非发情母猪：
+        调整数据选择的时间段，也以 08:00:00 或 15:00:00 作为样本时间段的结尾
+    """
     record_dataset = source_dataset.copy()
     # record_dataset = record_dataset[record_dataset["iTemperature"] > 25]
     record_dataset["sSowsNo"] = record_dataset["sSowsNo"].astype(str)
-    # 删除一些异常数据
+    # -------------------- 删除一些异常数据 --------------------
     if len(del_code) > 0:
         for code in del_code:
             code_str = str(code)
@@ -374,7 +381,7 @@ def data_processing(
         correct_dataset = record_dataset.copy()
 
     # -------------------- 数据选择 --------------------
-    # 选择发情母猪48小时数据，对非发情母猪数据复制
+    # 选择母猪48小时数据
     choose_data = estrusSows_data_choice(correct_dataset, time_choice)
     # choose_data.to_excel(test_data_path +"loss_of_time\\choose_data.xlsx",index=False)
 
@@ -455,16 +462,27 @@ def get_notEstrus_earCode(data: pd.DataFrame, estrus_earCode):
     return notEstrus_earCode
 
 
-# 拆分多次发情的数据并更新发情编号
+# 拆分多次发情的数据，将发情次数写入 sSowsNo_split
 def split_estrusData(data: pd.DataFrame, estrusTime, threshold: int):
-    data["sSowsNo"] = data["sSowsNo"].astype("str")
-    # 确保确保时间列是 datetime 类型并排序
-    data["tLastUploadTime"] = pd.to_datetime(data["tLastUploadTime"])
-    data = data.sort_values(by=["sSowsNo", "tLastUploadTime"])
-    record_dataset = data.copy()
+    """
+    保留原始 sSowsNo，按时间顺序将多次发情样本编号为 编号_1、编号_2。
 
-    splited_dataset = pd.DataFrame()
-    final_dataset = pd.DataFrame()
+    沿用 estrusTime 中的重复发情记录及 DEL_CODE 排除规则；对数据中至少
+    有一次 isEstrus == 1 的母猪，相邻记录间隔超过 threshold 天时分段。
+    有多个时间段时，更新每段全部记录的 sSowsNo_split；仅有一个时间段
+    或属于非发情母猪时，保留已有分段编号（包括 M / A 编号）。
+    缺失小时和缺失的发情终点标签不在此处补齐，不修改输入 DataFrame。
+    """
+    record_dataset = data.copy()
+    record_dataset["sSowsNo"] = record_dataset["sSowsNo"].astype(str)
+    record_dataset["tLastUploadTime"] = pd.to_datetime(
+        record_dataset["tLastUploadTime"]
+    )
+    record_dataset = record_dataset.sort_values(
+        by=["sSowsNo", "tLastUploadTime"]
+    ).reset_index(drop=True)
+    if "sSowsNo_split" not in record_dataset.columns:
+        record_dataset["sSowsNo_split"] = record_dataset["sSowsNo"]
 
     # 获取多次发情的耳标号
     several_estrus_ear_tag_codes = set()
@@ -480,34 +498,26 @@ def split_estrusData(data: pd.DataFrame, estrusTime, threshold: int):
     for del_earCode in DEL_CODE:
         del_earCode = str(del_earCode)
         several_estrus_ear_tag_codes.discard(del_earCode)
+
+    # 仅处理发情母猪，避免覆盖上一步生成的非发情 M / A 分段。
+    estrus_sows = record_dataset.loc[record_dataset["isEstrus"] == 1, "sSowsNo"]
+    several_estrus_ear_tag_codes.intersection_update(estrus_sows)
     print(sorted(several_estrus_ear_tag_codes))
     print(len(several_estrus_ear_tag_codes))
 
-    # 分离多次发情的母猪的数据
-    for earCode in several_estrus_ear_tag_codes:
-        earCode = str(earCode)
-        subset = data[data["sSowsNo"] == earCode].copy()
-
-        delta_limit = pd.Timedelta(days=threshold)
+    delta_limit = pd.Timedelta(days=threshold)
+    for earCode in sorted(several_estrus_ear_tag_codes):
+        subset = record_dataset.loc[record_dataset["sSowsNo"] == earCode]
         is_new_period = subset["tLastUploadTime"].diff() > delta_limit
-        subset["preiod_group"] = is_new_period.cumsum()
+        period_group = is_new_period.cumsum()
+        if period_group.nunique() <= 1:
+            continue
 
-        for group_id, group_df in subset.groupby("preiod_group"):
-            group_df = group_df.copy()
-            group_df["sSowsNo"] = group_df["sSowsNo"] + "_" + str(group_id + 1)
-            splited_dataset = pd.concat(
-                [splited_dataset, group_df], ignore_index=True
-            ).sort_values(by=["sSowsNo", "tLastUploadTime"])
+        record_dataset.loc[subset.index, "sSowsNo_split"] = (
+            earCode + "_" + (period_group + 1).astype(str)
+        )
 
-        # 删掉多次发情的耳标对应的数据
-        record_dataset = record_dataset[record_dataset["sSowsNo"] != earCode]
-
-    splited_dataset = splited_dataset.drop(columns="preiod_group")
-    final_dataset = pd.concat(
-        [record_dataset, splited_dataset], ignore_index=True
-    ).sort_values(by=["sSowsNo", "tLastUploadTime"])
-
-    return final_dataset
+    return record_dataset
 
 
 # 更新发情编号
@@ -520,27 +530,60 @@ def update_estrus_earCode(data: pd.DataFrame):
 
 
 # 分层分组划分数据集，确保同一母猪的数据不会同时出现在训练集、验证集和测试集中
-def stratified_group_split(df, train_ratio=0.7, val_ratio=0.1, test_ratio=0.2):
+def stratified_group_split(
+    df,
+    train_ratio=0.7,
+    val_ratio=0.1,
+    test_ratio=0.2,
+    random_count=123,
+):
+    """
+    按 sSowsNo 分层划分母猪，按 sSowsNo_split 统计各集合的样本数量。
+
+    同一母猪的全部发情次数和 M / A 窗口归入同一个集合。某头母猪只要
+    出现过 isEstrus == 1，其所属样本均按发情样本统计，原始标签不变。
+    比例针对母猪数量，样本数不保证严格符合比例；随机种子沿用 123。
+    返回 train_df、val_df、test_df，不修改输入数据。
+    """
+    required_columns = {"sSowsNo", "sSowsNo_split", "isEstrus"}
+    missing_columns = required_columns.difference(df.columns)
+    if missing_columns:
+        raise ValueError(f"缺少必要列: {sorted(missing_columns)}")
+    for column in ("sSowsNo", "sSowsNo_split"):
+        if df[column].isna().any():
+            raise ValueError(f"{column} 不能包含缺失编号")
+    if (df.groupby("sSowsNo_split")["sSowsNo"].nunique() > 1).any():
+        raise ValueError("同一个 sSowsNo_split 不能对应多头母猪")
+
+    ratios = np.asarray([train_ratio, val_ratio, test_ratio], dtype=float)
+    if (
+        not np.isfinite(ratios).all()
+        or (ratios <= 0).any()
+        or not np.isclose(ratios.sum(), 1.0)
+    ):
+        raise ValueError("训练集、验证集、测试集的比例必须均大于 0，且总和为 1")
+    train_ratio, val_ratio, test_ratio = ratios
+
     estrus_sows = df[df["isEstrus"] == 1]["sSowsNo"].unique()
     all_rows = df["sSowsNo"].unique()
     not_estrus_sows = np.array([sow for sow in all_rows if sow not in estrus_sows])
 
     # 对发情组进行划分
     e_train, e_temp = train_test_split(
-        estrus_sows, test_size=1 - train_ratio, random_state=123
+        estrus_sows, test_size=1 - train_ratio, random_state=random_count
     )
     # 计算验证集和测试集的相对比例
     val_size_relative = val_ratio / (val_ratio + test_ratio)
     e_val, e_test = train_test_split(
-        e_temp, test_size=1 - val_size_relative, random_state=123
+        e_temp, test_size=1 - val_size_relative, random_state=random_count
     )
 
     # 对非发情组进行划分
     n_train, n_temp = train_test_split(
-        not_estrus_sows, test_size=1 - train_ratio, random_state=123
+        not_estrus_sows, test_size=1 - train_ratio, random_state=random_count
     )
     n_val, n_test = train_test_split(
-        n_temp, test_size=1 - val_size_relative, random_state=123
+        n_temp, test_size=1 - val_size_relative, random_state=random_count
     )
 
     # 合并列表
@@ -553,16 +596,29 @@ def stratified_group_split(df, train_ratio=0.7, val_ratio=0.1, test_ratio=0.2):
     val_df = df[df["sSowsNo"].isin(final_val_ids)].copy()
     test_df = df[df["sSowsNo"].isin(final_test_ids)].copy()
 
-    print(f"------ 划分结果 ------")
-    print(
-        f"训练集：总数 {len(final_train_ids)},其中发情猪 {len(e_train)},非发情猪 {len(n_train)}"
-    )
-    print(
-        f"验证集：总数 {len(final_val_ids)},其中发情猪 {len(e_val)},非发情猪 {len(n_val)}"
-    )
-    print(
-        f"测试集：总数 {len(final_test_ids)},其中发情猪 {len(e_test)},非发情猪 {len(n_test)}"
-    )
+    datasets = (("训练集", train_df), ("验证集", val_df), ("测试集", test_df))
+    for column in ("sSowsNo", "sSowsNo_split"):
+        id_sets = [set(part[column]) for _, part in datasets]
+        for i in range(len(id_sets)):
+            for j in range(i + 1, len(id_sets)):
+                if id_sets[i].intersection(id_sets[j]):
+                    raise RuntimeError(f"划分结果中 {column} 存在跨集合交叉")
+        if set.union(*id_sets) != set(df[column]):
+            raise RuntimeError(f"划分前后的 {column} 编号不完整")
+    if sum(len(part) for _, part in datasets) != len(df):
+        raise RuntimeError("划分前后的数据总行数不一致")
+
+    print("------ 划分结果（按 sSowsNo_split 统计样本）------")
+    for name, part in datasets:
+        sow_count = part["sSowsNo"].nunique()
+        sample_count = part["sSowsNo_split"].nunique()
+        estrus_mask = part["sSowsNo"].isin(estrus_sows)
+        positive_count = part.loc[estrus_mask, "sSowsNo_split"].nunique()
+        negative_count = part.loc[~estrus_mask, "sSowsNo_split"].nunique()
+        print(
+            f"{name}：母猪 {sow_count} 头，样本总数 {sample_count}，"
+            f"正样本（发情）{positive_count}，负样本（非发情）{negative_count}"
+        )
 
     return train_df, val_df, test_df
 
@@ -647,15 +703,24 @@ def stratified_group_kfold(df, n_splits=5, test_ratio=0.2, random_state=123):
 
 
 # 填补
-def function_filled(data: pd.DataFrame):
+def function_filled(data: pd.DataFrame, start_time=None, end_time=None):
+    """补齐一个样本；可指定包含缺失首尾小时的完整窗口。"""
     if data.empty:
         return data
 
     record_dataset = data.copy()
     # 避免出现重复时间点
     record_dataset = record_dataset.drop_duplicates(subset=["tLastUploadTime"])
-    first_time = record_dataset["tLastUploadTime"].min()
-    last_time = record_dataset["tLastUploadTime"].max()
+    first_time = (
+        pd.to_datetime(start_time)
+        if start_time is not None
+        else record_dataset["tLastUploadTime"].min()
+    )
+    last_time = (
+        pd.to_datetime(end_time)
+        if end_time is not None
+        else record_dataset["tLastUploadTime"].max()
+    )
     full_time_range = pd.date_range(start=first_time, end=last_time, freq="1h")
     # 以完整时间序列为索引重新索引数据
     record_dataset = (
@@ -669,6 +734,7 @@ def function_filled(data: pd.DataFrame):
     fill_cols = [
         "sEarTagCode",
         "sSowsNo",
+        "sSowsNo_split",
         "sBrand",
         "dBreedDate",
         "dWeanDate",
@@ -677,7 +743,8 @@ def function_filled(data: pd.DataFrame):
     ]
     for col in fill_cols:
         if col in record_dataset.columns:
-            record_dataset[col] = record_dataset[col].ffill()
+            # 中间和末尾沿用前值；缺失的开头使用本样本首个已知值。
+            record_dataset[col] = record_dataset[col].ffill().bfill()
 
     # 填充数值列
     if "iStep" in record_dataset.columns:
@@ -691,271 +758,148 @@ def function_filled(data: pd.DataFrame):
 
 
 def fill_data(data: pd.DataFrame, balanced_data=True, stride=12):
-    final_dataset = pd.DataFrame()
+    """
+    逐个 sSowsNo_split 筛选并补齐已有样本，不再抽样、滑窗或修改编号。
 
-    estrus_sows = data[data["isEstrus"] == 1]["sSowsNo"].unique()
-    all_rows = data["sSowsNo"].unique()
-    not_estrus_sows = np.array([sow for sow in all_rows if sow not in estrus_sows])
+    每个窗口至少保留 44 个不同小时的记录，且温度不能恒定。优先使用
+    isEstrus == 1 的时刻作为终点；M / A 样本分别以 08:00 / 15:00 结束。
+    缺少发情终点标签时，根据现有记录确定唯一能容纳它们的 08:00 / 15:00
+    窗口。筛选后补足 WINDOW_SIZE 个小时，包括缺失首尾。
+    balanced_data、stride 仅为兼容旧调用保留，不参与处理。
+    """
+    if data.empty:
+        return data.copy()
+    required = {
+        "sSowsNo",
+        "sSowsNo_split",
+        "tLastUploadTime",
+        "iTemperature",
+        "isEstrus",
+    }
+    missing = required.difference(data.columns)
+    if missing:
+        raise ValueError(f"缺少必要列: {sorted(missing)}")
+    record_dataset = data.copy()
+    record_dataset["tLastUploadTime"] = pd.to_datetime(
+        record_dataset["tLastUploadTime"]
+    )
+    if (
+        record_dataset[["sSowsNo", "sSowsNo_split", "tLastUploadTime"]]
+        .isna()
+        .any()
+        .any()
+    ):
+        raise ValueError("样本编号、母猪编号和时间不能缺失")
+    if (
+        record_dataset["tLastUploadTime"]
+        .ne(record_dataset["tLastUploadTime"].dt.floor("h"))
+        .any()
+    ):
+        raise ValueError("fill_data 需要整点的小时数据")
+    if record_dataset.groupby("sSowsNo_split")["sSowsNo"].nunique().gt(1).any():
+        raise ValueError("一个 sSowsNo_split 只能对应一头母猪")
 
-    estrus_dataset = pd.DataFrame()
-    notEstrus_dataset = pd.DataFrame()
+    estrus_sows = set(record_dataset.loc[record_dataset["isEstrus"] == 1, "sSowsNo"])
+    window_span = pd.Timedelta(hours=WINDOW_SIZE - 1)
+    filled_groups = []
+    insufficient_samples = []
+    constant_samples = []
+    added_hours = 0
+    trimmed_rows = 0
 
-    temp_record_drop = []
-    for earCode in estrus_sows:
-        sub_df = data[data["sSowsNo"] == earCode].sort_values("tLastUploadTime")
-        if len(sub_df) >= 44:
-            filled_df = function_filled(sub_df)
-            estrus_dataset = pd.concat(
-                [estrus_dataset, filled_df], axis=0, ignore_index=True
-            )
-        else:
-            temp_record_drop.append(earCode)
-    print(f"以下发情样本由于数据不足被丢弃 (共 {len(temp_record_drop)} 个):")
-    print(f"{temp_record_drop}")
-
-    skipped_constant_windows = []
-    # 发情母猪个数与非发情母猪个数的比例
-    ratio = max(1, int(len(estrus_sows) / len(not_estrus_sows)) + 1)
-    for earCode in not_estrus_sows:
-        sub_df = data[data["sSowsNo"] == earCode].sort_values("tLastUploadTime")
-        total_len = len(sub_df)
-
-        if total_len < WINDOW_SIZE:
+    for split_id, group in record_dataset.groupby("sSowsNo_split", sort=False):
+        sub_df = group.sort_values("tLastUploadTime").drop_duplicates("tLastUploadTime")
+        if len(sub_df) < 44:
+            insufficient_samples.append(split_id)
             continue
 
-        # 平衡数据
-        if balanced_data:
-            sample_count = 0
-            for start_idx in range(0, total_len - WINDOW_SIZE + 1, stride):
-                if sample_count > ratio:
-                    continue
-
-                window_df = sub_df.iloc[start_idx : start_idx + WINDOW_SIZE].copy()
-                if window_df["iTemperature"].nunique() == 1:
-                    skipped_constant_windows.append(f"{earCode}_window_at_{start_idx}")
-                    continue
-
-                sprev_time = window_df["tLastUploadTime"].min()
-                last_time = window_df["tLastUploadTime"].max()
-                actual_span_hours = (last_time - sprev_time).total_seconds() / 3600
-                missing_hours = actual_span_hours - (WINDOW_SIZE - 1)
-                if missing_hours < 5:
-                    filled_df = function_filled(window_df)
-                    filled_df["sSowsNo"] = f"{earCode}_neg_{sample_count}"
-                    notEstrus_dataset = pd.concat(
-                        [notEstrus_dataset, filled_df], axis=0, ignore_index=True
-                    )
-                    sample_count += 1
-        elif balanced_data == False:
-            # 每头非发情母猪取多个数据 -- 每间隔stride时间步取一段数据
-            attempts = 0
-            # 不平衡比例
-            """ unbalance_ratio = 2
-            each_count = max(
-                1, int(len(estrus_sows) * unbalance_ratio / len(not_estrus_sows)) + 1
-            ) """
-            for start_idx in range(0, total_len - WINDOW_SIZE + 1, stride):
-                # 每头非发情母猪最多取 each_count 个
-                """if attempts >= each_count:
-                break"""
-
-                window_df = sub_df.iloc[start_idx : start_idx + WINDOW_SIZE].copy()
-                # 判断是否已经全部是同样的耳温值
-                if window_df["iTemperature"].nunique() == 1:
-                    skipped_constant_windows.append(f"{earCode}_neg_{attempts}")
-                else:
-                    span = (
-                        window_df["tLastUploadTime"].max()
-                        - window_df["tLastUploadTime"].min()
-                    ).total_seconds() / 3600
-                    if (span - (WINDOW_SIZE - 1)) < 5:
-                        filled_df = function_filled(window_df)
-                        filled_df["sSowsNo"] = f"{earCode}_neg_{attempts}"
-                        notEstrus_dataset = pd.concat(
-                            [notEstrus_dataset, filled_df], axis=0, ignore_index=True
-                        )
-                attempts += 1
-
-    final_dataset = pd.concat(
-        [estrus_dataset, notEstrus_dataset], axis=0, ignore_index=True
-    ).sort_values(by=["sSowsNo", "tLastUploadTime"])
-
-    if skipped_constant_windows:
-        print("-" * 30)
-        print(
-            f"以下非发情窗口由于耳温值无变化被跳过 (共 {len(skipped_constant_windows)} 个):"
-        )
-        print(skipped_constant_windows)
-
-    discarded_sows = []
-    valid_groups = []
-    for sow_id, group in final_dataset.groupby("sSowsNo"):
-        if group["iTemperature"].nunique() <= 1:
-            discarded_sows.append(sow_id)
+        estrus_times = sub_df.loc[sub_df["isEstrus"] == 1, "tLastUploadTime"]
+        if len(estrus_times) == 1:
+            window_end = estrus_times.iloc[0]
+            if window_end.hour not in (8, 15):
+                raise ValueError(f"样本 {split_id} 的发情终点不是 08:00 或 15:00")
+        elif len(estrus_times) > 1:
+            raise ValueError(f"样本 {split_id} 包含多个发情终点，请先完成样本拆分")
         else:
-            valid_groups.append(group)
+            first_time = sub_df["tLastUploadTime"].min()
+            last_time = sub_df["tLastUploadTime"].max()
+            suffix = str(split_id).rsplit("_", 2)
+            period = suffix[-2] if len(suffix) == 3 else None
+            end_hours = (8,) if period == "M" else (15,) if period == "A" else (8, 15)
+            candidates = []
+            for hour in end_hours:
+                candidate = last_time.normalize() + pd.Timedelta(hours=hour)
+                if candidate < last_time:
+                    candidate += pd.Timedelta(days=1)
+                if candidate - window_span <= first_time:
+                    candidates.append(candidate)
+            if len(candidates) != 1:
+                raise ValueError(
+                    f"无法唯一确定样本 {split_id} 的48小时窗口，请检查分段时间"
+                )
+            window_end = candidates[0]
 
-    if valid_groups:
-        final_dataset = pd.concat(valid_groups, axis=0, ignore_index=True)
-    else:
-        final_dataset = pd.DataFrame(columns=final_dataset.columns)
+        window_start = window_end - window_span
+        window = sub_df.loc[
+            sub_df["tLastUploadTime"].between(window_start, window_end)
+        ].copy()
+        trimmed_rows += len(sub_df) - len(window)
+        if len(window) < 44:
+            insufficient_samples.append(split_id)
+            continue
+        if window["iTemperature"].nunique() <= 1:
+            constant_samples.append(split_id)
+            continue
 
-    if discarded_sows:
-        print("-" * 30)
-        print(f"以下样本由于48小时耳温完全一致被丢弃 (共 {len(discarded_sows)} 个):")
-        print(discarded_sows)
+        filled_df = function_filled(window, window_start, window_end)
+        filled_df["sSowsNo_split"] = split_id
+        if len(filled_df) != WINDOW_SIZE:
+            raise RuntimeError(f"样本 {split_id} 补齐后长度异常")
+        added_hours += len(filled_df) - len(window)
+        filled_groups.append(filled_df)
 
-    final_all_sows = final_dataset["sSowsNo"].unique()
-    final_estrus_sows = final_dataset[final_dataset["isEstrus"] == 1][
-        "sSowsNo"
-    ].unique()
-    finbal_notEstrus_sows = np.array(
-        [sow for sow in final_all_sows if sow not in final_estrus_sows]
+    final_dataset = (
+        pd.concat(filled_groups, ignore_index=True).loc[:, data.columns]
+        if filled_groups
+        else data.iloc[:0].copy()
     )
-    print("-" * 30)
+    sample_count = final_dataset["sSowsNo_split"].nunique()
+    positive_count = final_dataset.loc[
+        final_dataset["sSowsNo"].isin(estrus_sows), "sSowsNo_split"
+    ].nunique()
     print(
-        f"总数 {len(final_all_sows)},其中发情样本 {len(final_estrus_sows)},非发情样本 {len(finbal_notEstrus_sows)}"
+        f"输入样本 {record_dataset['sSowsNo_split'].nunique()} 个；"
+        f"不足44条记录剔除 {len(insufficient_samples)} 个，温度恒定剔除 {len(constant_samples)} 个"
     )
+    print(
+        f"补齐后：样本总数 {sample_count}，正样本（发情）{positive_count}，"
+        f"负样本（非发情）{sample_count - positive_count}，每个样本 {WINDOW_SIZE} 小时"
+    )
+    print(f"新增小时记录 {added_hours} 条，移除窗口外记录 {trimmed_rows} 条")
     return final_dataset
 
 
 # 仅考虑温度特征的单变量LSTM数据准备
 def prepare_univariate_lstm_data(data: pd.DataFrame, scaler=None):
-    df_copy = data.copy()
-
-    if len(df_copy.columns) >= WINDOW_SIZE:
-        X_raw = df_copy.iloc[:, 1:-1].values
-        y = df_copy.iloc[:, -1].values
-
-        temp_values = X_raw.reshape(-1, 1)
-        if scaler is None:
-            scaler = StandardScaler()
-            temp_scaled = scaler.fit_transform(temp_values)
-        else:
-            temp_scaled = scaler.transform(temp_values)
-        X = temp_scaled.reshape(-1, WINDOW_SIZE, 1)
-        return X, y, scaler
-
-    feature_col = "iTemperature"
-    temp_values = df_copy[feature_col].values.reshape(-1, 1)
-    if scaler is None:
-        scaler = StandardScaler()
-        df_copy[feature_col] = scaler.fit_transform(temp_values)
-    else:
-        df_copy[feature_col] = scaler.transform(temp_values)
-
-    X_list, y_list = [], []
-    for earCode, group in df_copy.groupby("sSowsNo"):
-        group = group.sort_values("tLastUploadTime")
-        vals = group[feature_col].values
-        labels = group["isEstrus"].values
-
-        if len(vals) < WINDOW_SIZE:
-            continue
-
-        if (labels == 1).any():
-            estrus_indices = np.where(labels == 1)[0]
-            for end_idx in estrus_indices:
-                start_idx = end_idx - WINDOW_SIZE + 1
-                if start_idx >= 0:
-                    X_list.append(vals[start_idx : end_idx + 1])
-                    y_list.append(1)
-        else:
-            X_list.append(vals[:WINDOW_SIZE])
-            y_list.append(0)
-
-    X = np.array(X_list)
-    X = np.expand_dims(X, axis=-1)
-    y = np.array(y_list)
-
-    return X, y, scaler
+    """按独立48小时窗口准备temp_only输入；返回X、标签和训练标准化器，不写文件。"""
+    from experiment_data import legacy_tensors
+    return legacy_tensors(data, "temp_only", scaler)
 
 
 def convert_features(data: pd.DataFrame):
-    df_copy = data.copy()
-    cols = ["sSowsNo"] + [f"feature{i}" for i in range(1, 49)] + ["isEstrus"]
-    rows_list = []
-    drop_list = []
-
-    for earCode, group in df_copy.groupby("sSowsNo"):
-        # 确保每个分组都包含完整的48个时间步长数据
-        if len(group) >= WINDOW_SIZE:
-            # 提取48个iTemperature值
-            vals = group["iTemperature"].values[len(group) - WINDOW_SIZE :]
-
-            # 如果isEstrus列中存在1，则该样本标签为1，否则为0
-            label = group["isEstrus"].max()
-
-            # 构建新行: [编号, feature_1, ..., feature_48, 标签]
-            new_row = [earCode] + vals.tolist() + [label]
-            rows_list.append(new_row)
-        else:
-            drop_list.append(earCode)
-
-    if drop_list:
-        print("-" * 30)
-        print(f"以下样本由于时间步长不足被丢弃 (共 {len(drop_list)} 个):")
-        print(drop_list)
-
-    final_dataset = pd.DataFrame(rows_list, columns=cols)
-    return final_dataset
+    """逐sSowsNo_split展开48个温度值；旧首列存样本编号，避免合并同一母猪多个窗口。"""
+    from experiment_data import build_windows, flat_windows
+    frame = data.copy()
+    if "sSowsNo_split" not in frame:
+        frame["sSowsNo_split"] = frame["sSowsNo"].astype(str)
+    return flat_windows(build_windows(frame))
 
 
 # 增加 temperatureRate 特征
 def prepare_lstm_data(data: pd.DataFrame, scaler=None):
-    df_copy = data.copy()
-
-    # 如果已经是转换后的格式（即每行包含48个时间步的特征），则直接处理特征列
-    if len(df_copy.columns) >= WINDOW_SIZE + 2:
-        X_raw = df_copy.iloc[:, 1:-1].values
-        y = df_copy.iloc[:, -1].values
-
-        num_features = X_raw.shape[1] // WINDOW_SIZE
-        temp_values = (
-            X_raw.reshape(-1, num_features, WINDOW_SIZE)
-            .transpose(0, 2, 1)
-            .reshape(-1, num_features)
-        )
-        if scaler is None:
-            scaler = StandardScaler()
-            temp_scaled = scaler.fit_transform(temp_values)
-        else:
-            temp_scaled = scaler.transform(temp_values)
-        X = temp_scaled.reshape(-1, WINDOW_SIZE, num_features)
-        return X, y, scaler
-
-    feature_col = ["iTemperature", "temperatureRate"]
-    temp_values = df_copy[feature_col].values
-    if scaler is None:
-        scaler = StandardScaler()
-        df_copy[feature_col] = scaler.fit_transform(temp_values)
-    else:
-        df_copy[feature_col] = scaler.transform(temp_values)
-
-    X_list, y_list = [], []
-    for earCode, group in df_copy.groupby("sSowsNo"):
-        group = group.sort_values("tLastUploadTime")
-        vals = group[feature_col].values
-        labels = group["isEstrus"].values
-
-        if len(vals) < WINDOW_SIZE:
-            continue
-
-        if (labels == 1).any():
-            estrus_indices = np.where(labels == 1)[0]
-            for end_idx in estrus_indices:
-                start_idx = end_idx - WINDOW_SIZE + 1
-                if start_idx >= 0:
-                    X_list.append(vals[start_idx : end_idx + 1])
-                    y_list.append(1)
-        else:
-            X_list.append(vals[:WINDOW_SIZE])
-            y_list.append(0)
-
-    X = np.array(X_list)
-    y = np.array(y_list)
-
-    return X, y, scaler
+    """按独立48小时窗口准备temp_rate输入；返回X、标签和训练标准化器，不写文件。"""
+    from experiment_data import legacy_tensors
+    return legacy_tensors(data, "temp_rate", scaler)
 
 
 # 绘制训练历史的函数，单独保存每个指标的图
@@ -1226,6 +1170,9 @@ def SMOTE(data: pd.DataFrame, amount_oversampling=400, k=5):
         X_smote_class = []
         for i in range(n_gen_loop):
             neighbor_indices = indices[i][1:]
+            if len(neighbor_indices) == 0:
+                continue  # 如果没有可用的邻居，则跳过此样本
+
             for _ in range(N_to_gen):
                 nn_idx = np.random.choice(neighbor_indices)
                 diff = X_class[nn_idx] - X_subset[i]
